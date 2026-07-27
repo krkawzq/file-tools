@@ -50,6 +50,14 @@ def test_edit_doc_explains_create_prepend_and_append_modes() -> None:
     assert "combined with a non-empty ``old_string``" in doc
 
 
+def test_registered_mcp_tools_are_async() -> None:
+    mcp = _FakeMcp()
+    register_tools(mcp)
+
+    assert set(mcp.tools) == {"read", "write", "edit", "apply_patch", "bash"}
+    assert all(inspect.iscoroutinefunction(tool) for tool in mcp.tools.values())
+
+
 @pytest.mark.anyio
 async def test_registered_mcp_tools_execute_against_local_client(
     tmp_path: Path,
@@ -61,7 +69,7 @@ async def test_registered_mcp_tools_execute_against_local_client(
 
     cwd = str(tmp_path)
     write_result = await mcp.tools["write"](
-        "example.txt", "hello\n", cwd, client="local"
+        "example.txt", "hello\n", cwd, connection="local"
     )
     assert "wrote 6 bytes" in write_result
     assert (
@@ -69,19 +77,19 @@ async def test_registered_mcp_tools_execute_against_local_client(
             "example.txt",
             cwd,
             show_line_numbers=False,
-            client="local",
+            connection="local",
         )
         == "hello\n"
     )
 
     edit_result = await mcp.tools["edit"](
-        "example.txt", "hello", "world", cwd, client="local"
+        "example.txt", "hello", "world", cwd, connection="local"
     )
     assert edit_result.startswith("replaced ")
     assert "1 matches" in edit_result
 
     create_result = await mcp.tools["edit"](
-        "created.txt", "", "created", cwd, client="local"
+        "created.txt", "", "created", cwd, connection="local"
     )
     assert create_result.endswith("created.txt")
     assert create_result.startswith("created ")
@@ -92,7 +100,7 @@ async def test_registered_mcp_tools_execute_against_local_client(
         "header\n",
         cwd,
         prepend=True,
-        client="local",
+        connection="local",
     )
     assert prepend_result.endswith("example.txt")
     assert prepend_result.startswith("prepended to ")
@@ -105,10 +113,21 @@ async def test_registered_mcp_tools_execute_against_local_client(
         "+patched\n"
         "*** End Patch\n",
         cwd,
-        client="local",
+        connection="local",
     )
     assert "modified=['example.txt']" in patch_result
     assert (tmp_path / "example.txt").read_text() == "header\npatched\n"
 
-    bash_out = await mcp.tools["bash"]("echo thin-wrapper", cwd, client="local")
+    bash_out = await mcp.tools["bash"]("echo thin-wrapper", cwd, connection="local")
     assert "thin-wrapper" in bash_out
+
+
+def test_mcp_schema_uses_named_connections_without_credentials() -> None:
+    mcp = _FakeMcp()
+    register_tools(mcp)
+
+    for tool in mcp.tools.values():
+        parameters = inspect.signature(tool).parameters
+        assert "connection" in parameters
+        assert "ssh_password" not in parameters
+        assert "ssh_host" not in parameters

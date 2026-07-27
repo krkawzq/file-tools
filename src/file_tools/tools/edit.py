@@ -9,8 +9,8 @@ from .. import _core
 from ..client import (
     Client,
     ClientError,
+    _run_blocking,
     resolve_client as _resolve_client,
-    run_blocking,
 )
 
 
@@ -120,16 +120,19 @@ async def edit(
         raise ValueError("prepend=True cannot be used together with replace_all=True")
 
     if old_string == "":
-        exists, is_file, is_dir = await c.path_info(path)
-        if exists:
+        try:
+            info = await c.stat(path)
+        except ClientError as e:
+            raise EditError(str(e)) from e
+        if info.exists:
             if not prepend:
                 raise EditFileExistsError(
                     f"File already exists; empty old_string only creates new files: {path}\n"
                     "Hint: to insert at the start of an existing file, set prepend=True explicitly."
                 )
-            if is_dir:
+            if info.kind == "directory":
                 raise EditError(f"Path is a directory: {path}")
-            if not is_file:
+            if info.kind != "file":
                 raise EditError(f"Path is not a regular file: {path}")
             try:
                 content = await c.read_text(path, encoding=encoding)
@@ -141,7 +144,12 @@ async def edit(
                 prefix = prefix.replace("\r\n", "\n").replace("\n", "\r\n")
             new_content = prefix + content
             try:
-                await c.write_text(path, new_content, encoding=encoding)
+                await c.write_text_atomic(
+                    path,
+                    new_content,
+                    encoding=encoding,
+                    expected_version=info.version,
+                )
             except ClientError as e:
                 raise EditError(str(e)) from e
             return EditResult(
@@ -155,7 +163,12 @@ async def edit(
                 f"prepend=True requires an existing file: {path}"
             )
         try:
-            await c.write_text(path, new_string, encoding=encoding)
+            await c.write_text_atomic(
+                path,
+                new_string,
+                encoding=encoding,
+                create_only=True,
+            )
         except ClientError as e:
             raise EditError(str(e)) from e
         return EditResult(
@@ -165,13 +178,16 @@ async def edit(
             operation="created",
         )
 
-    exists, is_file, _ = await c.path_info(path)
-    if not exists:
+    try:
+        info = await c.stat(path)
+    except ClientError as e:
+        raise EditError(str(e)) from e
+    if not info.exists:
         raise EditFileNotFoundError(
             f"File does not exist: {path}\n"
             f"Hint: to write content into a new file, set old_string to an empty string."
         )
-    if not is_file:
+    if info.kind != "file":
         raise EditError(f"Path is not a regular file: {path}")
 
     try:
@@ -180,7 +196,7 @@ async def edit(
         raise EditError(str(e)) from e
 
     try:
-        new_content, count = await run_blocking(
+        new_content, count = await _run_blocking(
             _core.edit_text,
             content,
             old_string,
@@ -197,7 +213,7 @@ async def edit(
                 f"{content[:500]}{'...' if len(content) > 500 else ''}"
             ) from e
         if msg.startswith("AMBIGUOUS:"):
-            matches = await run_blocking(_core.find_matches, content, old_string)
+            matches = await _run_blocking(_core.find_matches, content, old_string)
             raw = content.encode("utf-8")
             context_lines = []
             for i, (pos, mlen) in enumerate(matches[:5]):
@@ -222,7 +238,12 @@ async def edit(
         raise EditError(msg) from e
 
     try:
-        await c.write_text(path, new_content, encoding=encoding)
+        await c.write_text_atomic(
+            path,
+            new_content,
+            encoding=encoding,
+            expected_version=info.version,
+        )
     except ClientError as e:
         raise EditError(str(e)) from e
 

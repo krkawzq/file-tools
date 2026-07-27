@@ -11,14 +11,12 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from anyio import create_task_group
-
 from .. import _core
 from ..client import (
     Client,
     ClientError,
+    _run_blocking,
     resolve_client as _resolve_client,
-    run_blocking,
 )
 
 BEGIN_PATCH = "*** Begin Patch"
@@ -47,6 +45,22 @@ class PatchParseError(PatchError):
 
 class PatchApplyError(PatchError):
     """Raised when patch path validation or filesystem mutation fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        committed_paths: list[str] | None = None,
+        rollback_errors: list[str] | None = None,
+    ) -> None:
+        self.committed_paths = committed_paths or []
+        self.rollback_errors = rollback_errors or []
+        suffix = ""
+        if self.committed_paths:
+            suffix += f"\nCommitted before failure: {self.committed_paths}"
+        if self.rollback_errors:
+            suffix += f"\nRollback errors: {self.rollback_errors}"
+        super().__init__(message + suffix)
 
 
 class PatchSeekError(PatchError):
@@ -266,6 +280,7 @@ class _FileState:
     is_file: bool = False
     is_dir: bool = False
     content: str | None = None
+    version: str | None = None
 
 
 def _path_identity(
@@ -301,9 +316,10 @@ async def apply_patch(
     All patch paths are resolved through the selected local or SSH client. The
     complete patch is parsed and preflighted against an in-memory filesystem
     view before writes begin. Syntax errors, missing sources, existing
-    destinations, and unmatched update context therefore prevent earlier hunks
-    from being applied. Low-level I/O failures during the final write/delete
-    phase cannot be rolled back transactionally.
+    destinations, unmatched update context, and stale file versions therefore
+    prevent silent partial application. Commits run in deterministic path
+    order, write destinations before deletes, and attempt rollback if a
+    low-level mutation fails.
 
     This is not a unified diff: omit ``diff --git``, ``---``, ``+++``, and
     numeric hunk ranges. Every control marker (``***`` and ``@@``) must start
@@ -408,7 +424,7 @@ async def apply_patch(
                 if heredoc_lines and heredoc_lines[-1] == tag:
                     text = "\n".join(heredoc_lines[:-1])
 
-    hunks = await run_blocking(_PatchParser().parse, text)
+    hunks = await _run_blocking(_PatchParser().parse, text)
     if not hunks:
         raise PatchApplyError("patch contains no file operations")
 
@@ -429,11 +445,12 @@ async def apply_patch(
         if path in current:
             return current[path]
         try:
-            exists, is_file, is_dir = await backend.path_info(path)
+            info = await backend.stat(path)
             state = _FileState(
-                exists=exists,
-                is_file=is_file,
-                is_dir=is_dir,
+                exists=info.exists,
+                is_file=info.kind == "file",
+                is_dir=info.kind == "directory",
+                version=info.version,
             )
         except ClientError as e:
             raise PatchApplyError(f"Failed to check path {path}: {e}") from e
@@ -492,7 +509,7 @@ async def apply_patch(
                 for c in hunk.chunks
             ]
             try:
-                new_content = await run_blocking(
+                new_content = await _run_blocking(
                     _core.derive_new_contents,
                     original,
                     path,
@@ -524,40 +541,106 @@ async def apply_patch(
                 )
                 result.modified.append(hunk.path)
 
-    write_errors: list[PatchApplyError] = []
+    changed_paths = sorted(
+        path
+        for path, state in current.items()
+        if state.exists != initial[path].exists
+        or state.content != initial[path].content
+    )
 
-    async def write_state(path: str, content: str) -> None:
+    # Capture complete rollback material before the first mutation. Delete-only
+    # hunks were not read during patch derivation, so load them now.
+    for path in changed_paths:
+        before = initial[path]
+        if before.exists and before.is_file and before.content is None:
+            try:
+                before.content = await backend.read_text(path)
+            except ClientError as e:
+                raise PatchApplyError(
+                    f"Failed to stage rollback content for {path}: {e}"
+                ) from e
+
+    # A full preflight catches unrelated changes across every path before any
+    # commit. Each mutation still repeats the version check atomically.
+    for path in changed_paths:
+        before = initial[path]
         try:
-            await backend.write_text(path, content)
+            observed = await backend.stat(path)
         except ClientError as e:
-            write_errors.append(PatchApplyError(f"Failed to write file {path}: {e}"))
+            raise PatchApplyError(f"Failed to revalidate path {path}: {e}") from e
+        if observed.exists != before.exists or observed.version != before.version:
+            raise PatchApplyError(
+                f"Patch conflict: {path} changed after it was staged"
+            )
 
-    async with create_task_group() as task_group:
-        for path, state in current.items():
+    committed_writes: list[tuple[str, str | None]] = []
+    committed_deletes: list[str] = []
+
+    async def rollback() -> list[str]:
+        errors: list[str] = []
+        for path in reversed(committed_deletes):
             before = initial[path]
-            if state.exists and state.is_file:
-                if not before.exists or state.content != before.content:
-                    task_group.start_soon(write_state, path, state.content or "")
+            try:
+                await backend.write_text_atomic(
+                    path,
+                    before.content or "",
+                    create_only=True,
+                )
+            except ClientError as e:
+                errors.append(f"restore deleted {path}: {e}")
+        for path, committed_version in reversed(committed_writes):
+            before = initial[path]
+            try:
+                if before.exists:
+                    await backend.write_text_atomic(
+                        path,
+                        before.content or "",
+                        expected_version=committed_version,
+                    )
+                else:
+                    await backend.delete_if_version(
+                        path,
+                        expected_version=committed_version,
+                    )
+            except ClientError as e:
+                errors.append(f"restore written {path}: {e}")
+        return errors
 
-    if write_errors:
-        raise write_errors[0]
+    try:
+        # Writes commit in canonical path order; deletes happen only after every
+        # destination is durable. This makes failures and rollback deterministic.
+        for path in changed_paths:
+            state = current[path]
+            before = initial[path]
+            if not (state.exists and state.is_file):
+                continue
+            if before.exists and state.content == before.content:
+                continue
+            committed = await backend.write_text_atomic(
+                path,
+                state.content or "",
+                expected_version=before.version if before.exists else None,
+                create_only=not before.exists,
+            )
+            committed_writes.append((path, committed.version))
 
-    delete_errors: list[PatchApplyError] = []
-
-    async def delete_state(path: str) -> None:
-        try:
-            await backend.delete(path)
-        except ClientError as e:
-            delete_errors.append(PatchApplyError(f"Failed to delete file {path}: {e}"))
-
-    async with create_task_group() as task_group:
-        for path, state in current.items():
+        for path in changed_paths:
+            state = current[path]
             before = initial[path]
             if before.exists and before.is_file and not state.exists:
-                task_group.start_soon(delete_state, path)
-
-    if delete_errors:
-        raise delete_errors[0]
+                await backend.delete_if_version(
+                    path,
+                    expected_version=before.version,
+                )
+                committed_deletes.append(path)
+    except ClientError as e:
+        rollback_errors = await rollback()
+        committed = [path for path, _ in committed_writes] + committed_deletes
+        raise PatchApplyError(
+            f"Patch commit failed: {e}",
+            committed_paths=committed if rollback_errors else [],
+            rollback_errors=rollback_errors,
+        ) from e
 
     return result
 

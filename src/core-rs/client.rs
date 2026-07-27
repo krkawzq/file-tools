@@ -1,4 +1,5 @@
 use crate::constants::{DEFAULT_MAX_OUTPUT_BYTES, MAX_CONFIGURABLE_OUTPUT_BYTES};
+use crate::fs::FileInfo;
 use crate::local::LocalClient;
 use crate::ssh::SshClient;
 use pyo3::create_exception;
@@ -10,10 +11,22 @@ use std::path::Path;
 use std::time::Duration;
 
 create_exception!(_core, ClientError, PyException);
+create_exception!(_core, FileNotFoundError, ClientError);
+create_exception!(_core, PermissionDeniedError, ClientError);
+create_exception!(_core, ConflictError, ClientError);
+create_exception!(_core, OperationTimeoutError, ClientError);
+create_exception!(_core, AuthenticationError, ClientError);
+create_exception!(_core, TransferLimitError, ClientError);
 
 #[derive(Debug)]
 pub enum CoreError {
     Client(String),
+    NotFound(String),
+    PermissionDenied(String),
+    Conflict(String),
+    Timeout(String),
+    Authentication(String),
+    TransferLimit(String),
     Value(String),
 }
 
@@ -21,7 +34,22 @@ impl CoreError {
     pub fn into_pyerr(self) -> PyErr {
         match self {
             Self::Client(message) => ClientError::new_err(message),
+            Self::NotFound(message) => FileNotFoundError::new_err(message),
+            Self::PermissionDenied(message) => PermissionDeniedError::new_err(message),
+            Self::Conflict(message) => ConflictError::new_err(message),
+            Self::Timeout(message) => OperationTimeoutError::new_err(message),
+            Self::Authentication(message) => AuthenticationError::new_err(message),
+            Self::TransferLimit(message) => TransferLimitError::new_err(message),
             Self::Value(message) => PyValueError::new_err(message),
+        }
+    }
+
+    pub fn from_io(action: &str, path: &str, error: std::io::Error) -> Self {
+        let message = format!("{action} failed: {path}: {error}");
+        match error.kind() {
+            std::io::ErrorKind::NotFound => Self::NotFound(message),
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied(message),
+            _ => Self::Client(message),
         }
     }
 }
@@ -377,6 +405,19 @@ pub fn decode_text(
 
 pub fn register(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("ClientError", py.get_type::<ClientError>())?;
+    module.add("FileNotFoundError", py.get_type::<FileNotFoundError>())?;
+    module.add(
+        "PermissionDeniedError",
+        py.get_type::<PermissionDeniedError>(),
+    )?;
+    module.add("ConflictError", py.get_type::<ConflictError>())?;
+    module.add(
+        "OperationTimeoutError",
+        py.get_type::<OperationTimeoutError>(),
+    )?;
+    module.add("AuthenticationError", py.get_type::<AuthenticationError>())?;
+    module.add("TransferLimitError", py.get_type::<TransferLimitError>())?;
+    module.add_class::<FileInfo>()?;
     module.add_class::<CommandResult>()?;
     module.add_class::<LocalClient>()?;
     module.add_class::<SshClient>()?;

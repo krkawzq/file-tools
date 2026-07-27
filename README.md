@@ -48,7 +48,9 @@ Work **locally** or over **SSH** with the same interface — pick a client, pass
 
 - **One workspace at a time** — every call takes an explicit `cwd` (local path or remote path).
 - **Local and remote parity** — `client="local"` or `client="ssh"` on every tool.
-- **Safe-by-default SSH** — system OpenSSH, keys/agent/`~/.ssh/config`; passwords stay out of argv.
+- **Safe-by-default SSH** — system OpenSSH, keys/agent/`~/.ssh/config`; passwords stay out of argv and MCP schemas.
+- **Bounded file I/O** — line windows stream with a configurable transfer cap instead of loading whole files into Python.
+- **Conflict-aware writes** — atomic replace, version checks, and deterministic patch rollback prevent silent lost updates.
 - **Predictable agent contract** — 1-based line offsets; negative offset means “tail”.
 - **Bounded shell** — timeouts, retained head/tail output, no sandbox theatre, no hidden background manager.
 - **Host-ready** — ships as MCP + plugins for **Codex**, **Claude Code**, **Grok**, and **Cursor**.
@@ -110,7 +112,32 @@ client = get_client(
 print(read("README.md", client=client).content)
 ```
 
-All five tools accept the same SSH parameters. Prefer keys/agent over passwords.
+The Python API and CLI accept the same SSH parameters for all five tools.
+Prefer keys/agent over passwords.
+
+For MCP, configure SSH once and expose only a profile name to the model:
+
+```json
+{
+  "connections": {
+    "worker": {
+      "client": "ssh",
+      "ssh_host": "host.example.com",
+      "ssh_port": 22,
+      "ssh_user": "user",
+      "ssh_key": "~/.ssh/id_ed25519",
+      "max_concurrency": 4
+    }
+  }
+}
+```
+
+Save this as `~/.config/file-tools/connections.json`, or point
+`FILE_TOOLS_CONNECTIONS_FILE` at another path. MCP calls then use
+`connection="worker"`. Clients are cached with a 5-minute TTL by default,
+reuse OpenSSH control sockets on Unix, and cap concurrent SSH operations per
+profile. Tune the cache with `FILE_TOOLS_CLIENT_CACHE_TTL` and
+`FILE_TOOLS_CLIENT_CACHE_SIZE`.
 
 ---
 

@@ -11,8 +11,13 @@ from anyio import Event, create_task_group, sleep
 
 from file_tools import (
     ClientError,
+    ConflictError,
     LocalClient,
+    OperationTimeoutError,
     SshClient,
+    TransferLimitError,
+    clear_client_cache,
+    get_connection_client,
     get_client,
     resolve_client,
 )
@@ -240,6 +245,70 @@ async def test_get_client_creates_fresh_local_clients(tmp_path: Path) -> None:
     assert Path(a.cwd) == tmp_path.resolve()
 
 
+async def test_local_path_info_uses_one_async_operation(tmp_path: Path) -> None:
+    target = tmp_path / "file.txt"
+    target.write_text("content")
+    client = LocalClient(cwd=tmp_path)
+
+    assert await client.path_info("file.txt") == (True, True, False)
+    assert await client.path_info("missing.txt") == (False, False, False)
+
+
+async def test_local_stat_and_atomic_write_detect_stale_versions(tmp_path: Path) -> None:
+    target = tmp_path / "file.txt"
+    target.write_text("before")
+    client = LocalClient(cwd=tmp_path)
+
+    initial = await client.stat("file.txt")
+    committed = await client.write_text_atomic(
+        "file.txt",
+        "after",
+        expected_version=initial.version,
+    )
+
+    assert committed.version != initial.version
+    with pytest.raises(ConflictError):
+        await client.write_text_atomic(
+            "file.txt",
+            "stale",
+            expected_version=initial.version,
+        )
+    assert target.read_text() == "after"
+
+
+async def test_local_full_read_respects_transfer_limit_but_window_is_bounded(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "large.txt"
+    target.write_text("first\n" + ("x" * 4096) + "\nlast\n")
+    client = LocalClient(cwd=tmp_path, max_transfer_bytes=128)
+
+    with pytest.raises(TransferLimitError):
+        await client.read_text("large.txt")
+
+    text, total, start, end, truncated = await client.read_text_window(
+        "large.txt", 1, 1
+    )
+    assert text == "first\n"
+    assert (total, start, end, truncated) == (3, 1, 1, True)
+
+
+async def test_named_local_connection_is_cached(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "connections.json"
+    config.write_text('{"connections":{"workspace":{"client":"local"}}}')
+    monkeypatch.setenv("FILE_TOOLS_CONNECTIONS_FILE", str(config))
+    clear_client_cache()
+
+    first = get_connection_client("workspace", cwd=str(tmp_path))
+    second = get_connection_client("workspace", cwd=str(tmp_path))
+
+    assert first is second
+    clear_client_cache()
+
+
 async def test_resolve_prefers_explicit_client(tmp_path: Path) -> None:
     explicit = LocalClient(cwd=tmp_path)
     got = resolve_client(explicit, client="local", cwd="/somewhere/else")
@@ -258,6 +327,14 @@ async def test_ssh_requires_host_port_user() -> None:
         get_client(client="ssh", cwd="/tmp", ssh_host="h", ssh_user="u")
     with pytest.raises(ValueError, match="ssh_user is required"):
         get_client(client="ssh", cwd="/tmp", ssh_host="h", ssh_port=22)
+    with pytest.raises(ValueError, match="must not start"):
+        get_client(
+            client="ssh",
+            cwd="/tmp",
+            ssh_host="-oProxyCommand=touch /tmp/pwned",
+            ssh_port=22,
+            ssh_user="u",
+        )
 
 
 async def test_python_clients_are_async_facades() -> None:
@@ -268,6 +345,32 @@ async def test_python_clients_are_async_facades() -> None:
     assert LocalClient is not native.LocalClient
     assert inspect.iscoroutinefunction(LocalClient.read_text)
     assert inspect.iscoroutinefunction(SshClient.exec_command)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
+async def test_native_ssh_construction_does_not_spawn_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import file_tools._core as native
+
+    marker = tmp_path / "ssh-started"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    fake_ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    native.SshClient(
+        "fake-host",
+        port=22,
+        username="test-user",
+        cwd=str(tmp_path),
+        allow_password_prompt=False,
+    )
+
+    assert not marker.exists()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
@@ -312,3 +415,76 @@ async def test_native_ssh_runner_preserves_exit_and_kills_timeout_tree(
     assert timed.timed_out
     await sleep(2.1)
     assert not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
+async def test_ssh_file_operations_are_bounded_atomic_and_versioned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text(
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do remote=$arg; done\n"
+        "exec /bin/sh -c \"$remote\"\n"
+    )
+    fake_ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    target = tmp_path / "remote.txt"
+    target.write_text("a\nb\nc")
+    client = SshClient(
+        "fake-host",
+        port=22,
+        username="test-user",
+        cwd=str(tmp_path),
+        allow_password_prompt=False,
+        multiplexing=False,
+    )
+
+    initial = await client.stat("remote.txt")
+    window = await client.read_text_window("remote.txt", 2, 1)
+    committed = await client.write_text_atomic(
+        "remote.txt",
+        "changed\n",
+        expected_version=initial.version,
+    )
+
+    assert initial.kind == "file"
+    assert window == ("b\n", 3, 2, 2, True)
+    assert committed.version != initial.version
+    with pytest.raises(ConflictError):
+        await client.write_text_atomic(
+            "remote.txt",
+            "stale\n",
+            expected_version=initial.version,
+        )
+    assert target.read_text() == "changed\n"
+    assert not list(tmp_path.glob("*.file-tools.lock"))
+    assert not list(tmp_path.glob("*.file-tools-*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
+async def test_ssh_file_operation_timeout_is_structured(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text("#!/bin/sh\nsleep 5\n")
+    fake_ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+    client = SshClient(
+        "fake-host",
+        port=22,
+        username="test-user",
+        cwd=str(tmp_path),
+        operation_timeout=0.1,
+        allow_password_prompt=False,
+        multiplexing=False,
+    )
+
+    with pytest.raises(OperationTimeoutError):
+        await client.stat("remote.txt")

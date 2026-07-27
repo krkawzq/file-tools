@@ -3,7 +3,7 @@ use crate::output::HeadTailBytes;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,7 +31,13 @@ pub struct ProcessSpec {
     pub max_output_bytes: usize,
 }
 
-fn spawn_reader<R>(mut stream: R, target: Arc<Mutex<HeadTailBytes>>) -> thread::JoinHandle<()>
+type TimeoutCallback<'a> = dyn Fn(&[u8]) + 'a;
+
+fn spawn_reader<R>(
+    mut stream: R,
+    target: Arc<Mutex<HeadTailBytes>>,
+    finished: mpsc::Sender<()>,
+) -> thread::JoinHandle<()>
 where
     R: Read + Send + 'static,
 {
@@ -51,6 +57,7 @@ where
                 Err(_) => break,
             }
         }
+        let _ = finished.send(());
     })
 }
 
@@ -106,16 +113,32 @@ fn exit_parts(status: ExitStatus) -> (i32, Option<i32>) {
     }
 }
 
-fn wait_for_readers(readers: &[thread::JoinHandle<()>]) {
+fn wait_for_readers(readers: Vec<thread::JoinHandle<()>>, finished: mpsc::Receiver<()>) {
     let deadline = Instant::now() + OUTPUT_DRAIN_GRACE;
-    while readers.iter().any(|reader| !reader.is_finished()) && Instant::now() < deadline {
-        thread::sleep(POLL_INTERVAL);
+    let mut remaining = readers.len();
+    while remaining > 0 {
+        let Some(wait) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        match finished.recv_timeout(wait) {
+            Ok(()) => remaining -= 1,
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    // Completed readers are joined to release their thread resources. A
+    // descendant may intentionally keep a pipe open; those readers stay
+    // detached after the bounded drain grace rather than blocking forever.
+    for reader in readers {
+        if remaining == 0 || reader.is_finished() {
+            let _ = reader.join();
+        }
     }
 }
 
 pub fn run_process(
     spec: ProcessSpec,
-    on_timeout: Option<&dyn Fn(&[u8])>,
+    on_timeout: Option<&TimeoutCallback<'_>>,
 ) -> Result<ProcessOutput, String> {
     let started = Instant::now();
     let mut command = Command::new(&spec.program);
@@ -150,10 +173,20 @@ pub fn run_process(
 
     let stdout_buffer = Arc::new(Mutex::new(HeadTailBytes::new(spec.max_output_bytes)));
     let stderr_buffer = Arc::new(Mutex::new(HeadTailBytes::new(spec.max_output_bytes)));
+    let (reader_finished_tx, reader_finished_rx) = mpsc::channel();
     let readers = vec![
-        spawn_reader(stdout, Arc::clone(&stdout_buffer)),
-        spawn_reader(stderr, Arc::clone(&stderr_buffer)),
+        spawn_reader(
+            stdout,
+            Arc::clone(&stdout_buffer),
+            reader_finished_tx.clone(),
+        ),
+        spawn_reader(
+            stderr,
+            Arc::clone(&stderr_buffer),
+            reader_finished_tx.clone(),
+        ),
     ];
+    drop(reader_finished_tx);
 
     if let Some(input) = spec.stdin {
         if let Some(mut stream) = child.stdin.take() {
@@ -191,7 +224,7 @@ pub fn run_process(
         thread::sleep(POLL_INTERVAL);
     };
 
-    wait_for_readers(&readers);
+    wait_for_readers(readers, reader_finished_rx);
 
     let stdout = stdout_buffer
         .lock()

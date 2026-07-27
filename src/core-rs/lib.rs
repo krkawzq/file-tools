@@ -4,6 +4,7 @@ mod client;
 mod command;
 mod constants;
 mod edit;
+mod fs;
 mod local;
 mod output;
 mod patch;

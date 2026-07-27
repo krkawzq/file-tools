@@ -21,8 +21,8 @@ fn with_crlf(text: &str) -> String {
 ///
 /// Returns a list of `(byte_start, byte_len)` pairs.
 #[pyfunction]
-pub fn find_matches(text: &str, pattern: &str) -> Vec<(usize, usize)> {
-    find_matches_inner(text, pattern)
+pub fn find_matches(py: Python<'_>, text: &str, pattern: &str) -> Vec<(usize, usize)> {
+    py.allow_threads(|| find_matches_inner(text, pattern))
 }
 
 fn find_matches_inner(text: &str, pattern: &str) -> Vec<(usize, usize)> {
@@ -119,10 +119,20 @@ fn rstrip_lines_find_all(text: &str, pattern: &str) -> Vec<(usize, usize)> {
 /// one forward pass.
 #[pyfunction]
 pub fn apply_replacements_text(
+    py: Python<'_>,
     text: &str,
     matches: Vec<(usize, usize)>,
     new_string: &str,
 ) -> PyResult<String> {
+    py.allow_threads(|| apply_replacements_text_inner(text, matches, new_string))
+        .map_err(PyValueError::new_err)
+}
+
+fn apply_replacements_text_inner(
+    text: &str,
+    matches: Vec<(usize, usize)>,
+    new_string: &str,
+) -> Result<String, String> {
     let mut ordered = matches;
     ordered.sort_by_key(|(pos, _)| *pos);
 
@@ -130,39 +140,35 @@ pub fn apply_replacements_text(
     let mut removed_bytes = 0usize;
     for &(pos, len) in &ordered {
         let Some(end) = pos.checked_add(len) else {
-            return Err(PyValueError::new_err(format!(
-                "match span overflow: pos={pos} len={len}"
-            )));
+            return Err(format!("match span overflow: pos={pos} len={len}"));
         };
         if end > text.len() {
-            return Err(PyValueError::new_err(format!(
+            return Err(format!(
                 "match span out of range: pos={pos} len={len} text_len={}",
                 text.len()
-            )));
-        }
-        if !text.is_char_boundary(pos) || !text.is_char_boundary(end) {
-            return Err(PyValueError::new_err(
-                "match span is not on a UTF-8 char boundary",
             ));
         }
+        if !text.is_char_boundary(pos) || !text.is_char_boundary(end) {
+            return Err("match span is not on a UTF-8 char boundary".to_string());
+        }
         if pos < previous_end {
-            return Err(PyValueError::new_err("overlapping matches"));
+            return Err("overlapping matches".to_string());
         }
         previous_end = end;
         removed_bytes = removed_bytes
             .checked_add(len)
-            .ok_or_else(|| PyValueError::new_err("total match length overflow"))?;
+            .ok_or_else(|| "total match length overflow".to_string())?;
     }
 
     let inserted_bytes = new_string
         .len()
         .checked_mul(ordered.len())
-        .ok_or_else(|| PyValueError::new_err("replacement size overflow"))?;
+        .ok_or_else(|| "replacement size overflow".to_string())?;
     let result_capacity = text
         .len()
         .checked_sub(removed_bytes)
         .and_then(|remaining| remaining.checked_add(inserted_bytes))
-        .ok_or_else(|| PyValueError::new_err("result size overflow"))?;
+        .ok_or_else(|| "result size overflow".to_string())?;
 
     let mut result = String::with_capacity(result_capacity);
     let mut last = 0usize;
@@ -181,21 +187,32 @@ pub fn apply_replacements_text(
 /// with code prefix `AMBIGUOUS:`. When no match, raises `NOT_FOUND:`.
 #[pyfunction]
 pub fn edit_text(
+    py: Python<'_>,
     text: &str,
     old_string: &str,
     new_string: &str,
     replace_all: bool,
 ) -> PyResult<(String, usize)> {
+    py.allow_threads(|| edit_text_inner(text, old_string, new_string, replace_all))
+        .map_err(PyValueError::new_err)
+}
+
+fn edit_text_inner(
+    text: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> Result<(String, usize), String> {
     let crlf = uses_crlf(text);
     let matches = find_matches_inner(text, old_string);
     if matches.is_empty() {
-        return Err(PyValueError::new_err("NOT_FOUND: old_string not found"));
+        return Err("NOT_FOUND: old_string not found".to_string());
     }
     if matches.len() > 1 && !replace_all {
-        return Err(PyValueError::new_err(format!(
+        return Err(format!(
             "AMBIGUOUS: old_string found {} times",
             matches.len()
-        )));
+        ));
     }
     let selected = if replace_all {
         matches
@@ -208,7 +225,7 @@ pub fn edit_text(
     } else {
         new_string.to_owned()
     };
-    let new_text = apply_replacements_text(text, selected, &replacement)?;
+    let new_text = apply_replacements_text_inner(text, selected, &replacement)?;
     Ok((new_text, count))
 }
 
@@ -263,14 +280,15 @@ mod tests {
 
     #[test]
     fn replacement_accepts_unsorted_spans_and_reserves_expansion() {
-        let result = apply_replacements_text("a-b-c", vec![(4, 1), (0, 1)], "expanded").unwrap();
+        let result =
+            apply_replacements_text_inner("a-b-c", vec![(4, 1), (0, 1)], "expanded").unwrap();
         assert_eq!(result, "expanded-b-expanded");
     }
 
     #[test]
     fn edit_preserves_crlf_and_accepts_lf_patterns() {
         let (result, count) =
-            edit_text("hello  \r\nworld\r\n", "hello\nworld", "hi\nthere", false).unwrap();
+            edit_text_inner("hello  \r\nworld\r\n", "hello\nworld", "hi\nthere", false).unwrap();
         assert_eq!(count, 1);
         assert_eq!(result, "hi\r\nthere\r\n");
         assert_eq!(
@@ -281,14 +299,14 @@ mod tests {
 
     #[test]
     fn edit_does_not_add_a_trailing_newline() {
-        let (result, count) = edit_text("before", "before", "after", false).unwrap();
+        let (result, count) = edit_text_inner("before", "before", "after", false).unwrap();
         assert_eq!(count, 1);
         assert_eq!(result, "after");
     }
 
     #[test]
     fn edit_can_remove_a_trailing_newline() {
-        let (result, count) = edit_text("before\n", "before\n", "after", false).unwrap();
+        let (result, count) = edit_text_inner("before\n", "before\n", "after", false).unwrap();
         assert_eq!(count, 1);
         assert_eq!(result, "after");
     }

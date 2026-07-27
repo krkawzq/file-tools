@@ -4,6 +4,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use std::collections::VecDeque;
 use std::fmt::Write;
 
 /// Count logical lines in text.
@@ -27,30 +28,12 @@ fn count_lines_inner(text: &str) -> usize {
     count
 }
 
-/// Split text into lines while retaining line endings.
-fn lines_with_endings(text: &str) -> Vec<&str> {
-    if text.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut start = 0;
-    for (i, b) in text.bytes().enumerate() {
-        if b == b'\n' {
-            out.push(&text[start..=i]);
-            start = i + 1;
-        }
-    }
-    if start < text.len() {
-        out.push(&text[start..]);
-    }
-    out
-}
-
 /// Resolve an offset to a zero-based start index and line count.
 ///
 /// - `offset >= 1`: start at that 1-based line
 /// - `offset == 0`: start at line 1
 /// - `offset < 0`: tail `|offset|` lines (`limit` ignored for window size)
+#[cfg(test)]
 fn resolve_window(total_lines: usize, offset: i64, limit: usize) -> PyResult<(usize, usize, bool)> {
     if limit == 0 {
         return Err(PyValueError::new_err("limit must be > 0"));
@@ -66,7 +49,11 @@ fn resolve_window(total_lines: usize, offset: i64, limit: usize) -> PyResult<(us
         return Ok((start, effective, false));
     }
 
-    let start_line = if offset == 0 { 1 } else { offset as usize };
+    let start_line = if offset == 0 {
+        1
+    } else {
+        usize::try_from(offset).unwrap_or(usize::MAX)
+    };
     let start_index = start_line.saturating_sub(1);
     if start_index >= total_lines {
         return Ok((total_lines, 0, false));
@@ -75,6 +62,55 @@ fn resolve_window(total_lines: usize, offset: i64, limit: usize) -> PyResult<(us
     let take = limit.min(available);
     let truncated = take < available;
     Ok((start_index, take, truncated))
+}
+
+/// Scan once while retaining only the requested window.
+fn collect_window(
+    text: &str,
+    offset: i64,
+    limit: usize,
+) -> PyResult<(Vec<String>, usize, usize, bool)> {
+    if limit == 0 {
+        return Err(PyValueError::new_err("limit must be > 0"));
+    }
+    if text.is_empty() {
+        return Ok((Vec::new(), 0, 0, false));
+    }
+
+    if offset < 0 {
+        let tail = usize::try_from(offset.unsigned_abs()).unwrap_or(usize::MAX);
+        let mut selected = VecDeque::new();
+        let mut total = 0usize;
+        for line in text.split_inclusive('\n') {
+            total += 1;
+            if selected.len() == tail {
+                selected.pop_front();
+            }
+            selected.push_back(line);
+        }
+        let start = total - selected.len();
+        let lines = selected.into_iter().map(str::to_owned).collect();
+        return Ok((lines, total, start, false));
+    }
+
+    let start_line = if offset == 0 {
+        1
+    } else {
+        usize::try_from(offset).unwrap_or(usize::MAX)
+    };
+    let requested_start = start_line.saturating_sub(1);
+    let mut lines = Vec::new();
+    let mut total = 0usize;
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        total += 1;
+        if index >= requested_start && lines.len() < limit {
+            lines.push(line.to_owned());
+        }
+    }
+
+    let start = requested_start.min(total);
+    let truncated = start < total && lines.len() < total - start;
+    Ok((lines, total, start, truncated))
 }
 
 /// Slice lines (0-based `[start, start+take)`) keeping original endings.
@@ -162,17 +198,11 @@ fn prepare_read_inner(
     limit: usize,
     show_line_numbers: bool,
 ) -> PyResult<(String, usize, usize, usize, bool, Vec<String>)> {
-    let all_lines = lines_with_endings(text);
-    let total = all_lines.len();
-    let (start, take, truncated) = resolve_window(total, offset, limit)?;
-    if take == 0 {
+    let (lines, total, start, truncated) = collect_window(text, offset, limit)?;
+    if lines.is_empty() {
         let start_line = if total == 0 { 1 } else { total + 1 };
         return Ok((String::new(), total, start_line, total, false, Vec::new()));
     }
-    let lines: Vec<String> = all_lines[start..start + take]
-        .iter()
-        .map(|line| (*line).to_owned())
-        .collect();
     let start_line = start + 1;
     let end_line = start + lines.len();
     let content = if show_line_numbers {
@@ -210,10 +240,7 @@ mod tests {
         let total = count_lines_inner("a\nb\nc\n");
         let (start, take, _) = resolve_window(total, 2, 1).unwrap();
         assert_eq!((start, take), (1, 1));
-        assert_eq!(
-            slice_lines_inner("a\nb\nc\n", start, take).concat(),
-            "b\n"
-        );
+        assert_eq!(slice_lines_inner("a\nb\nc\n", start, take).concat(), "b\n");
     }
 
     #[test]
@@ -227,5 +254,26 @@ mod tests {
     fn minimum_offset_tails_without_overflow() {
         let (start, take, truncated) = resolve_window(2, i64::MIN, 1).unwrap();
         assert_eq!((start, take, truncated), (0, 2, false));
+    }
+
+    #[test]
+    fn collect_window_keeps_only_requested_positive_lines() {
+        let (lines, total, start, truncated) = collect_window("a\nb\nc\nd\n", 2, 2).unwrap();
+        assert_eq!(lines, ["b\n", "c\n"]);
+        assert_eq!((total, start, truncated), (4, 1, true));
+    }
+
+    #[test]
+    fn collect_window_tails_in_one_pass() {
+        let (lines, total, start, truncated) = collect_window("a\nb\nc\nd", -2, 1).unwrap();
+        assert_eq!(lines, ["c\n", "d"]);
+        assert_eq!((total, start, truncated), (4, 2, false));
+    }
+
+    #[test]
+    fn very_large_positive_offset_is_beyond_end() {
+        let (lines, total, start, truncated) = collect_window("a\nb\n", i64::MAX, 1).unwrap();
+        assert!(lines.is_empty());
+        assert_eq!((total, start, truncated), (2, 2, false));
     }
 }

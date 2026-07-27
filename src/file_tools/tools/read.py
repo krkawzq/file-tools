@@ -9,8 +9,9 @@ from .. import _core
 from ..client import (
     Client,
     ClientError,
+    FileNotFoundError as ClientFileNotFoundError,
+    _run_blocking,
     resolve_client as _resolve_client,
-    run_blocking,
 )
 
 DEFAULT_READ_LIMIT = 2000
@@ -104,28 +105,34 @@ async def read(
     c = _resolve_client(client)
     path = await c.resolve(file_path)
 
-    exists, is_file, is_dir = await c.path_info(path)
-    if not exists:
-        raise ReadFileNotFoundError(f"File does not exist: {path}")
-    if is_dir:
-        raise ReadIsDirectoryError(f"Path is a directory, not a file: {path}")
-    if not is_file:
-        raise ReadError(f"Path is not a regular file: {path}")
-
     try:
-        text = await c.read_text(path, encoding=encoding)
+        text, total_lines, start_line, end_line, truncated = (
+            await c.read_text_window(path, offset, limit, encoding=encoding)
+        )
+    except ClientFileNotFoundError as e:
+        raise ReadFileNotFoundError(f"File does not exist: {path}") from e
     except ClientError as e:
+        message = str(e)
+        if "path is a directory" in message or "Is a directory" in message:
+            raise ReadIsDirectoryError(
+                f"Path is a directory, not a file: {path}"
+            ) from e
         raise ReadError(str(e)) from e
 
-    if text == "":
+    if total_lines == 0:
         raise ReadEmptyFileError(f"File is empty: {path}")
 
-    content, total_lines, start_line, end_line, truncated, lines = await run_blocking(
-        _core.prepare_read,
-        text,
-        offset,
-        limit,
-        show_line_numbers,
+    lines = text.splitlines(keepends=True)
+    content = (
+        await _run_blocking(
+            _core.format_cat_n,
+            lines,
+            start_line,
+            total_lines,
+            truncated,
+        )
+        if show_line_numbers
+        else text
     )
 
     return ReadResult(

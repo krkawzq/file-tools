@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from file_tools import LocalClient
+from file_tools import ClientError, LocalClient
 from file_tools.tools.apply_patch import (
     PatchApplyError,
     PatchParseError,
@@ -217,6 +217,40 @@ async def test_preflight_failure_does_not_apply_earlier_hunks(tmp_path: Path) ->
         await apply_patch(patch, client=LocalClient(cwd=tmp_path))
 
     assert not (tmp_path / "created.txt").exists()
+
+
+async def test_commit_failure_rolls_back_earlier_writes(tmp_path: Path) -> None:
+    delegate = LocalClient(cwd=tmp_path)
+
+    class FailingClient:
+        kind = "local"
+
+        def __init__(self) -> None:
+            self.failed = False
+
+        def __getattr__(self, name: str):
+            return getattr(delegate, name)
+
+        async def write_text_atomic(self, path: str, content: str, **kwargs):
+            if path.endswith("b.txt") and not self.failed:
+                self.failed = True
+                raise ClientError("injected write failure")
+            return await delegate.write_text_atomic(path, content, **kwargs)
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: a.txt\n"
+        "+a\n"
+        "*** Add File: b.txt\n"
+        "+b\n"
+        "*** End Patch\n"
+    )
+
+    with pytest.raises(PatchApplyError, match="Patch commit failed"):
+        await apply_patch(patch, client=FailingClient())  # type: ignore[arg-type]
+
+    assert not (tmp_path / "a.txt").exists()
+    assert not (tmp_path / "b.txt").exists()
 
 
 async def test_move_rejects_existing_destination(tmp_path: Path) -> None:

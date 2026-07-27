@@ -3,18 +3,15 @@
 Common parameters:
 
 - ``cwd`` (**required**)
-- ``client``: ``"local"`` (default) | ``"ssh"``
-- When ``client="ssh"``, **required**: ``ssh_host``, ``ssh_port``, ``ssh_user``
-  Optional auth: ``ssh_password`` or private-key path ``ssh_key``
-- Unknown SSH host keys are rejected unless
-  ``ssh_accept_unknown_host_key=True`` is explicitly supplied
+- ``connection``: ``"local"`` (default) or a named profile from
+  ``FILE_TOOLS_CONNECTIONS_FILE``. Credentials never appear in the MCP schema.
 """
 
 from __future__ import annotations
 
 from typing import Mapping
 
-from ..client import get_client as _get_client
+from ..client import get_connection_client as _get_connection_client
 from ..tools.apply_patch import apply_patch as _apply_patch
 from ..tools.bash import bash as _bash
 from ..tools.edit import edit as _edit
@@ -32,26 +29,9 @@ def _require_cwd(cwd: str) -> str:
 def _client(
     *,
     cwd: str,
-    client: str = "local",
-    ssh_host: str = "",
-    ssh_port: int | None = None,
-    ssh_user: str = "",
-    ssh_password: str = "",
-    ssh_key: str = "",
-    ssh_flags: str = "",
-    ssh_accept_unknown_host_key: bool = False,
+    connection: str = "local",
 ):
-    return _get_client(
-        client=client,
-        cwd=cwd,
-        ssh_host=ssh_host,
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        ssh_password=ssh_password,
-        ssh_key=ssh_key,
-        ssh_flags=ssh_flags,
-        accept_unknown_host_key=ssh_accept_unknown_host_key,
-    )
+    return _get_connection_client(connection, cwd=cwd)
 
 
 async def read(
@@ -60,14 +40,7 @@ async def read(
     offset: int = 1,
     limit: int = 2000,
     show_line_numbers: bool = True,
-    client: str = "local",
-    ssh_host: str = "",
-    ssh_port: int | None = None,
-    ssh_user: str = "",
-    ssh_password: str = "",
-    ssh_key: str = "",
-    ssh_flags: str = "",
-    ssh_accept_unknown_host_key: bool = False,
+    connection: str = "local",
 ) -> str:
     """Read a file from the local or remote filesystem.
 
@@ -75,8 +48,8 @@ async def read(
     Results are returned with ``cat -n``-style line number prefixes when
     ``show_line_numbers`` is True. For large files, use ``offset`` and
     ``limit`` to bound the returned text and avoid overwhelming the context
-    window. The backend still reads the complete file before selecting the
-    requested line window.
+    window. Backends scan incrementally and retain only the requested window;
+    SSH transfers only the selected lines.
 
     ``offset`` is 1-based: ``offset=1`` starts at the first line, and
     ``offset=0`` is treated as line 1. A negative ``offset`` (e.g. ``-50``)
@@ -98,29 +71,16 @@ async def read(
         show_line_numbers: Prefix each line with its line number (``cat -n``
             format) and append a truncation notice when applicable. Set to
             False to return exact source text. Defaults to True.
-        client: ``"local"`` (default) to read from the local filesystem,
-            or ``"ssh"`` to read via SSH.
-        ssh_host: SSH target hostname or IP (required when
-            ``client="ssh"``).
-        ssh_port: SSH port. Optional and ignored for ``client="local"``;
-            required as a positive integer for ``client="ssh"``. No port
-            defaults to 22.
-        ssh_user: SSH login user (required when ``client="ssh"``).
-        ssh_password: Optional explicit SSH password.
-        ssh_key: Optional private-key file path on the host filesystem.
-        ssh_flags: Space-separated supported OpenSSH-style options:
-            ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Other options are
-            ignored rather than passed to an OpenSSH process.
-        ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-            missing from the host account's ``known_hosts`` file.
+        connection: ``"local"`` or a named profile loaded from
+            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
     Returns:
         The file content as a string, with optional line number prefixes
         and a truncation notice when the file exceeds the read window.
 
     Raises:
-        ValueError: If ``cwd`` is empty, ``limit`` is not positive, the
-            client name is invalid, or required SSH settings are absent.
+        ValueError: If ``cwd`` is empty, ``limit`` is not positive, or the
+            named connection profile is missing or invalid.
         ReadFileNotFoundError: If the target file does not exist.
         ReadIsDirectoryError: If the target path is a directory.
         ReadEmptyFileError: If the file exists but contains no content.
@@ -129,14 +89,7 @@ async def read(
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        client=client,
-        ssh_host=ssh_host,
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        ssh_password=ssh_password,
-        ssh_key=ssh_key,
-        ssh_flags=ssh_flags,
-        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+        connection=connection,
     )
     result = await _read(
         target_file,
@@ -152,14 +105,7 @@ async def write(
     file_path: str,
     content: str,
     cwd: str,
-    client: str = "local",
-    ssh_host: str = "",
-    ssh_port: int | None = None,
-    ssh_user: str = "",
-    ssh_password: str = "",
-    ssh_key: str = "",
-    ssh_flags: str = "",
-    ssh_accept_unknown_host_key: bool = False,
+    connection: str = "local",
 ) -> str:
     """Create a new file or completely overwrite an existing file.
 
@@ -175,29 +121,16 @@ async def write(
         content: The complete text to write. Written as-is; add a trailing
             newline explicitly if one is desired.
         cwd: Working directory for resolving relative paths. Required.
-        client: ``"local"`` (default) to write to the local filesystem,
-            or ``"ssh"`` to write via SSH.
-        ssh_host: SSH target hostname or IP (required when
-            ``client="ssh"``).
-        ssh_port: SSH port. Optional and ignored for ``client="local"``;
-            required as a positive integer for ``client="ssh"``. No port
-            defaults to 22.
-        ssh_user: SSH login user (required when ``client="ssh"``).
-        ssh_password: Optional explicit SSH password.
-        ssh_key: Optional private-key file path on the host filesystem.
-        ssh_flags: Space-separated supported OpenSSH-style options:
-            ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Other options are
-            ignored rather than passed to an OpenSSH process.
-        ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-            missing from the host account's ``known_hosts`` file.
+        connection: ``"local"`` or a named profile loaded from
+            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
     Returns:
         A summary string with the number of bytes written and the resolved
         file path.
 
     Raises:
-        ValueError: If ``cwd`` is empty, the client name is invalid, or
-            required SSH settings are absent.
+        ValueError: If ``cwd`` is empty or the named connection profile is
+            missing or invalid.
         WriteIsDirectoryError: If the destination is an existing directory.
         WriteError: If encoding, directory creation, or writing fails.
 
@@ -207,14 +140,7 @@ async def write(
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        client=client,
-        ssh_host=ssh_host,
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        ssh_password=ssh_password,
-        ssh_key=ssh_key,
-        ssh_flags=ssh_flags,
-        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+        connection=connection,
     )
     result = await _write(file_path, content, client=c)
     return f"wrote {result.bytes_written} bytes to {result.file_path}"
@@ -227,14 +153,7 @@ async def edit(
     cwd: str,
     replace_all: bool = False,
     prepend: bool = False,
-    client: str = "local",
-    ssh_host: str = "",
-    ssh_port: int | None = None,
-    ssh_user: str = "",
-    ssh_password: str = "",
-    ssh_key: str = "",
-    ssh_flags: str = "",
-    ssh_accept_unknown_host_key: bool = False,
+    connection: str = "local",
 ) -> str:
     """Perform exact string replacement in a file.
 
@@ -288,29 +207,16 @@ async def edit(
             Defaults to False.
         prepend: If True, explicitly prepend ``new_string`` to an existing
             file. Requires ``old_string=""``. Defaults to False.
-        client: ``"local"`` (default) to edit on the local filesystem,
-            or ``"ssh"`` to edit via SSH.
-        ssh_host: SSH target hostname or IP (required when
-            ``client="ssh"``).
-        ssh_port: SSH port. Optional and ignored for ``client="local"``;
-            required as a positive integer for ``client="ssh"``. No port
-            defaults to 22.
-        ssh_user: SSH login user (required when ``client="ssh"``).
-        ssh_password: Optional explicit SSH password.
-        ssh_key: Optional private-key file path on the host filesystem.
-        ssh_flags: Space-separated supported OpenSSH-style options:
-            ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Other options are
-            ignored rather than passed to an OpenSSH process.
-        ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-            missing from the host account's ``known_hosts`` file.
+        connection: ``"local"`` or a named profile loaded from
+            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
     Returns:
         A summary string that explicitly reports ``created``, ``prepended``,
         or ``replaced`` and the resolved path.
 
     Raises:
-        ValueError: If ``cwd`` is empty, the client name is invalid, or
-            required SSH settings are absent; also if ``prepend=True`` is
+        ValueError: If ``cwd`` is empty, the named connection profile is
+            invalid, or if ``prepend=True`` is
             combined with a non-empty ``old_string`` or ``replace_all=True``.
         EditFileNotFoundError: If the target file does not exist and
             ``old_string`` is non-empty, create-on-empty is disabled, or an
@@ -328,14 +234,7 @@ async def edit(
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        client=client,
-        ssh_host=ssh_host,
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        ssh_password=ssh_password,
-        ssh_key=ssh_key,
-        ssh_flags=ssh_flags,
-        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+        connection=connection,
     )
     result = await _edit(
         file_path,
@@ -355,14 +254,7 @@ async def edit(
 async def apply_patch(
     patch_text: str,
     cwd: str,
-    client: str = "local",
-    ssh_host: str = "",
-    ssh_port: int | None = None,
-    ssh_user: str = "",
-    ssh_password: str = "",
-    ssh_key: str = "",
-    ssh_flags: str = "",
-    ssh_accept_unknown_host_key: bool = False,
+    connection: str = "local",
 ) -> str:
     """Apply a structured patch to one or more text files.
 
@@ -371,8 +263,8 @@ async def apply_patch(
     parsed and preflighted against an in-memory filesystem view before writes
     begin. Syntax errors, missing sources, conflicting destinations, and
     unmatched update context prevent any filesystem mutation. Low-level
-    failures during the write/delete phase cannot be rolled back
-    transactionally.
+    commit failures trigger a best-effort deterministic rollback. Every write
+    and delete also verifies the staged file version to reject stale patches.
 
     Pass the complete patch as the string value of ``patch_text``. The string
     must not contain Markdown fences or a second JSON wrapper. A surrounding
@@ -459,19 +351,8 @@ async def apply_patch(
             ``*** End Patch``.
         cwd: Required working directory on the selected client. Relative patch
             paths are resolved from here.
-        client: ``"local"`` (default) or ``"ssh"``.
-        ssh_host: SSH hostname or IP, required for ``client="ssh"``.
-        ssh_port: SSH port. Optional and ignored for ``client="local"``;
-            required as a positive integer for ``client="ssh"``. No port
-            defaults to 22.
-        ssh_user: SSH login user, required for ``client="ssh"``.
-        ssh_password: Optional explicit SSH password.
-        ssh_key: Optional private-key file path on the host filesystem.
-        ssh_flags: Space-separated supported OpenSSH-style options:
-            ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Other options are
-            ignored rather than passed to an OpenSSH process.
-        ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-            missing from the host account's ``known_hosts`` file.
+        connection: ``"local"`` or a named profile loaded from
+            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
     Returns:
         A summary of patch-relative paths grouped by operation, for example
@@ -479,8 +360,8 @@ async def apply_patch(
         Moves are reported under ``modified`` using their destination path.
 
     Raises:
-        ValueError: If ``cwd`` is empty, the client name is invalid, or
-            required SSH settings are absent.
+        ValueError: If ``cwd`` is empty or the named connection profile is
+            missing or invalid.
         PatchParseError: If the patch grammar is invalid or incomplete.
         PatchSeekError: If an update chunk cannot be located in its file.
         PatchApplyError: If a path precondition fails or filesystem I/O fails.
@@ -492,14 +373,7 @@ async def apply_patch(
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        client=client,
-        ssh_host=ssh_host,
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        ssh_password=ssh_password,
-        ssh_key=ssh_key,
-        ssh_flags=ssh_flags,
-        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+        connection=connection,
     )
     result = await _apply_patch(patch_text, client=c)
     return f"added={result.added} modified={result.modified} deleted={result.deleted}"
@@ -515,14 +389,7 @@ async def bash(
     env: Mapping[str, str] | None = None,
     stdin: str | None = None,
     max_output_bytes: int = 1024 * 1024,
-    client: str = "local",
-    ssh_host: str = "",
-    ssh_port: int | None = None,
-    ssh_user: str = "",
-    ssh_password: str = "",
-    ssh_key: str = "",
-    ssh_flags: str = "",
-    ssh_accept_unknown_host_key: bool = False,
+    connection: str = "local",
 ) -> str:
     """Execute a shell command and return its output.
 
@@ -579,21 +446,8 @@ async def bash(
         stdin: Text to pipe to the command's standard input.
         max_output_bytes: Positive per-stream retained-output limit in bytes.
             Defaults to 1 MiB (1048576) and may not exceed 16 MiB (16777216).
-        client: ``"local"`` (default) to run on the local machine, or
-            ``"ssh"`` to run via SSH.
-        ssh_host: SSH target hostname or IP (required when
-            ``client="ssh"``).
-        ssh_port: SSH port. Optional and ignored for ``client="local"``;
-            required as a positive integer for ``client="ssh"``. No port
-            defaults to 22.
-        ssh_user: SSH login user (required when ``client="ssh"``).
-        ssh_password: Optional explicit SSH password.
-        ssh_key: Optional private-key file path on the host filesystem.
-        ssh_flags: Space-separated supported OpenSSH-style options:
-            ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Other options are
-            ignored rather than passed to an OpenSSH process.
-        ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-            missing from the host account's ``known_hosts`` file.
+        connection: ``"local"`` or a named profile loaded from
+            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
     Returns:
         A formatted string with exit code, cwd, duration, the original
@@ -602,8 +456,8 @@ async def bash(
         preserves both head and tail with a truncation marker.
 
     Raises:
-        ValueError: If ``cwd`` is empty, the client name is invalid, or
-            required SSH settings are absent.
+        ValueError: If ``cwd`` is empty or the named connection profile is
+            missing or invalid.
         BashError: If the command, timeout, interpreter, flags, environment,
             or output limit is invalid, or execution cannot be started.
 
@@ -614,14 +468,7 @@ async def bash(
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        client=client,
-        ssh_host=ssh_host,
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        ssh_password=ssh_password,
-        ssh_key=ssh_key,
-        ssh_flags=ssh_flags,
-        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+        connection=connection,
     )
     result = await _bash(
         command,

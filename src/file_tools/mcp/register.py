@@ -25,14 +25,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         offset: int = 1,
         limit: int = 2000,
         show_line_numbers: bool = True,
-        client: str = "local",
-        ssh_host: str = "",
-        ssh_port: int | None = None,
-        ssh_user: str = "",
-        ssh_password: str = "",
-        ssh_key: str = "",
-        ssh_flags: str = "",
-        ssh_accept_unknown_host_key: bool = False,
+        connection: str = "local",
     ) -> str:
         """Read a UTF-8 text file from a local or SSH-backed filesystem.
 
@@ -70,29 +63,16 @@ def register_tools(mcp: _ToolRegistrar) -> None:
                 defaults to 2000.
             show_line_numbers: Add line-number prefixes and a truncation notice
                 when applicable. Defaults to true.
-            client: Filesystem backend: ``"local"`` or ``"ssh"``. Defaults to
-                ``"local"``. SSH parameters are ignored for a local client.
-            ssh_host: SSH hostname or IP address, without the username.
-                Required when ``client="ssh"``.
-            ssh_port: SSH port. Optional and ignored when ``client="local"``;
-                required as a positive integer when ``client="ssh"``. There is
-                no implicit port 22 fallback.
-            ssh_user: SSH username. Required when ``client="ssh"``.
-            ssh_password: Optional explicit SSH password.
-            ssh_key: Optional private-key path on the host filesystem.
-            ssh_flags: Space-separated supported OpenSSH-style flags:
-                ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Unsupported flags
-                are ignored rather than passed to an OpenSSH process.
-            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-                absent from the server account's ``known_hosts`` file.
+            connection: ``"local"`` or a named profile loaded from
+                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
         Returns:
             The selected text, optionally line-numbered. UTF-8 decoding errors
             are replaced rather than raised.
 
         Raises:
-            ValueError: If ``cwd`` is empty, ``limit`` is not positive, the
-                client name is invalid, or required SSH settings are absent.
+            ValueError: If ``cwd`` is empty, ``limit`` is not positive, or the
+                named connection profile is missing or invalid.
             ReadError: If the path is missing, empty, not a regular file, or
                 cannot be read.
         """
@@ -102,14 +82,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             offset=offset,
             limit=limit,
             show_line_numbers=show_line_numbers,
-            client=client,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_user=ssh_user,
-            ssh_password=ssh_password,
-            ssh_key=ssh_key,
-            ssh_flags=ssh_flags,
-            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+            connection=connection,
         )
 
     @mcp.tool
@@ -117,14 +90,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         file_path: str,
         content: str,
         cwd: str,
-        client: str = "local",
-        ssh_host: str = "",
-        ssh_port: int | None = None,
-        ssh_user: str = "",
-        ssh_password: str = "",
-        ssh_key: str = "",
-        ssh_flags: str = "",
-        ssh_accept_unknown_host_key: bool = False,
+        connection: str = "local",
     ) -> str:
         """Create or completely overwrite a UTF-8 text file.
 
@@ -145,21 +111,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             content: Complete replacement contents encoded as UTF-8.
             cwd: Required working directory on the selected client. Relative
                 file paths are resolved from here.
-            client: Filesystem backend: ``"local"`` or ``"ssh"``. Defaults to
-                ``"local"``. SSH parameters are ignored for a local client.
-            ssh_host: SSH hostname or IP address, without the username.
-                Required when ``client="ssh"``.
-            ssh_port: SSH port. Optional and ignored when ``client="local"``;
-                required as a positive integer when ``client="ssh"``. There is
-                no implicit port 22 fallback.
-            ssh_user: SSH username. Required when ``client="ssh"``.
-            ssh_password: Optional explicit SSH password.
-            ssh_key: Optional private-key path on the host filesystem.
-            ssh_flags: Space-separated supported OpenSSH-style flags:
-                ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Unsupported flags
-                are ignored rather than passed to an OpenSSH process.
-            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-                absent from the server account's ``known_hosts`` file.
+            connection: ``"local"`` or a named profile loaded from
+                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
         Returns:
             A confirmation string containing the number of UTF-8 bytes written
@@ -167,8 +120,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             ``"wrote 6 bytes to /workspace/note.txt"``.
 
         Raises:
-            ValueError: If ``cwd`` is empty, the client name is invalid, or
-                required SSH settings are absent.
+            ValueError: If ``cwd`` is empty or the named connection profile is
+                missing or invalid.
             WriteError: If the destination is a directory or the file cannot be
                 encoded, created, or overwritten.
 
@@ -180,14 +133,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             file_path,
             content,
             cwd,
-            client=client,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_user=ssh_user,
-            ssh_password=ssh_password,
-            ssh_key=ssh_key,
-            ssh_flags=ssh_flags,
-            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+            connection=connection,
         )
 
     @mcp.tool
@@ -198,14 +144,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         cwd: str,
         replace_all: bool = False,
         prepend: bool = False,
-        client: str = "local",
-        ssh_host: str = "",
-        ssh_port: int | None = None,
-        ssh_user: str = "",
-        ssh_password: str = "",
-        ssh_key: str = "",
-        ssh_flags: str = "",
-        ssh_accept_unknown_host_key: bool = False,
+        connection: str = "local",
     ) -> str:
         """Replace a specific string in a local or remote UTF-8 text file.
 
@@ -249,21 +188,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
                 match must be unique. Defaults to false.
             prepend: Explicitly prepend ``new_string`` to an existing file.
                 Requires ``old_string=""``. Defaults to false.
-            client: Filesystem backend: ``"local"`` or ``"ssh"``. Defaults to
-                ``"local"``. SSH parameters are ignored for a local client.
-            ssh_host: SSH hostname or IP address, without the username.
-                Required when ``client="ssh"``.
-            ssh_port: SSH port. Optional and ignored when ``client="local"``;
-                required as a positive integer when ``client="ssh"``. There is
-                no implicit port 22 fallback.
-            ssh_user: SSH username. Required when ``client="ssh"``.
-            ssh_password: Optional explicit SSH password.
-            ssh_key: Optional private-key path on the host filesystem.
-            ssh_flags: Space-separated supported OpenSSH-style flags:
-                ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Unsupported flags
-                are ignored rather than passed to an OpenSSH process.
-            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-                absent from the server account's ``known_hosts`` file.
+            connection: ``"local"`` or a named profile loaded from
+                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
         Returns:
             A confirmation that explicitly distinguishes the operation, for
@@ -272,8 +198,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             ``"replaced /workspace/app.py (1 matches)"``.
 
         Raises:
-            ValueError: If ``cwd`` is empty, the client name is invalid, or
-                required SSH settings are absent; also if ``prepend=true`` is
+            ValueError: If ``cwd`` is empty, the named connection profile is
+                invalid, or if ``prepend=true`` is
                 combined with a non-empty ``old_string`` or
                 ``replace_all=true``.
             EditFileNotFoundError: If the file is missing and ``old_string`` is
@@ -291,28 +217,14 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             cwd,
             replace_all=replace_all,
             prepend=prepend,
-            client=client,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_user=ssh_user,
-            ssh_password=ssh_password,
-            ssh_key=ssh_key,
-            ssh_flags=ssh_flags,
-            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+            connection=connection,
         )
 
     @mcp.tool
     async def apply_patch(
         patch_text: str,
         cwd: str,
-        client: str = "local",
-        ssh_host: str = "",
-        ssh_port: int | None = None,
-        ssh_user: str = "",
-        ssh_password: str = "",
-        ssh_key: str = "",
-        ssh_flags: str = "",
-        ssh_accept_unknown_host_key: bool = False,
+        connection: str = "local",
     ) -> str:
         """Apply a structured patch to one or more text files.
 
@@ -321,8 +233,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         is parsed and preflighted against an in-memory filesystem view before
         writes begin. Syntax errors, missing sources, conflicting destinations,
         and unmatched update context prevent any filesystem mutation. Low-level
-        I/O failures during the write/delete phase cannot be rolled back
-        transactionally.
+        Commit failures trigger a best-effort deterministic rollback. Every
+        write and delete also verifies the staged file version.
 
         ``patch_text`` contains the complete patch document directly, without
         Markdown fences or a serialized JSON wrapper. Content lines must not
@@ -412,21 +324,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
                 unnecessary.
             cwd: Required working directory on the selected client. Relative
                 patch paths are resolved from here.
-            client: Filesystem backend: ``"local"`` or ``"ssh"``. Defaults to
-                ``"local"``. SSH parameters are ignored for a local client.
-            ssh_host: SSH hostname or IP address, without the username.
-                Required when ``client="ssh"``.
-            ssh_port: SSH port. Optional and ignored when ``client="local"``;
-                required as a positive integer when ``client="ssh"``. There is
-                no implicit port 22 fallback.
-            ssh_user: SSH username. Required when ``client="ssh"``.
-            ssh_password: Optional explicit SSH password.
-            ssh_key: Optional private-key path on the host filesystem.
-            ssh_flags: Space-separated supported OpenSSH-style flags:
-                ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Unsupported flags
-                are ignored rather than passed to an OpenSSH process.
-            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-                absent from the server account's ``known_hosts`` file.
+            connection: ``"local"`` or a named profile loaded from
+                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
         Returns:
             A summary of patch-relative paths grouped by operation, for example
@@ -434,8 +333,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             A moved file is reported under ``modified`` using its destination.
 
         Raises:
-            ValueError: If ``cwd`` is empty, the client name is invalid, or
-                required SSH settings are absent.
+            ValueError: If ``cwd`` is empty or the named connection profile is
+                missing or invalid.
             PatchParseError: If the patch grammar is invalid or incomplete.
             PatchSeekError: If an update chunk cannot be located in its file.
             PatchApplyError: If a required source is missing, a destination
@@ -448,14 +347,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         return await impl.apply_patch(
             patch_text,
             cwd,
-            client=client,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_user=ssh_user,
-            ssh_password=ssh_password,
-            ssh_key=ssh_key,
-            ssh_flags=ssh_flags,
-            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+            connection=connection,
         )
 
     @mcp.tool
@@ -469,14 +361,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         env: dict[str, str] | None = None,
         stdin: str | None = None,
         max_output_bytes: int = 1024 * 1024,
-        client: str = "local",
-        ssh_host: str = "",
-        ssh_port: int | None = None,
-        ssh_user: str = "",
-        ssh_password: str = "",
-        ssh_key: str = "",
-        ssh_flags: str = "",
-        ssh_accept_unknown_host_key: bool = False,
+        connection: str = "local",
     ) -> str:
         """Execute a foreground command through a selected shell.
 
@@ -525,21 +410,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             max_output_bytes: Maximum bytes retained independently for stdout
                 and stderr while excess bytes continue to be drained. Must be a
                 positive integer no greater than 16 MiB; defaults to 1 MiB.
-            client: Execution backend: ``"local"`` or ``"ssh"``. Defaults to
-                ``"local"``. SSH parameters are ignored for a local client.
-            ssh_host: SSH hostname or IP address, without the username.
-                Required when ``client="ssh"``.
-            ssh_port: SSH port. Optional and ignored when ``client="local"``;
-                required as a positive integer when ``client="ssh"``. There is
-                no implicit port 22 fallback.
-            ssh_user: SSH username. Required when ``client="ssh"``.
-            ssh_password: Optional explicit SSH password.
-            ssh_key: Optional private-key path on the host filesystem.
-            ssh_flags: Space-separated supported OpenSSH-style flags:
-                ``-X``, ``-Y``, ``-A``, ``-a``, and ``-C``. Unsupported flags
-                are ignored rather than passed to an OpenSSH process.
-            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
-                absent from the server account's ``known_hosts`` file.
+            connection: ``"local"`` or a named profile loaded from
+                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
 
         Returns:
             A bounded text report containing ``exit``, resolved ``cwd``,
@@ -549,8 +421,8 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             a 100,000-character cap and preserves both the beginning and end.
 
         Raises:
-            ValueError: If ``cwd`` is empty, the client name is invalid, or
-                required SSH settings are absent.
+            ValueError: If ``cwd`` is empty or the named connection profile is
+                missing or invalid.
             BashError: If the command, timeout, interpreter, flags,
                 environment, or output limit is invalid, or if the process/SSH
                 command cannot be started.
@@ -569,12 +441,5 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             env=env,
             stdin=stdin,
             max_output_bytes=max_output_bytes,
-            client=client,
-            ssh_host=ssh_host,
-            ssh_port=ssh_port,
-            ssh_user=ssh_user,
-            ssh_password=ssh_password,
-            ssh_key=ssh_key,
-            ssh_flags=ssh_flags,
-            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
+            connection=connection,
         )

@@ -6,12 +6,13 @@ use pyo3::prelude::*;
 /// Search for a line sequence with progressively relaxed normalization.
 #[pyfunction]
 pub fn seek_sequence(
+    py: Python<'_>,
     lines: Vec<String>,
     pattern: Vec<String>,
     start: usize,
     eof: bool,
 ) -> Option<usize> {
-    seek_sequence_inner(&lines, &pattern, start, eof)
+    py.allow_threads(|| seek_sequence_inner(&lines, &pattern, start, eof))
 }
 
 fn seek_sequence_inner(
@@ -101,10 +102,12 @@ fn normalise_char(c: char) -> char {
 /// Apply sorted, non-overlapping line replacements in one linear rebuild.
 #[pyfunction]
 pub fn apply_line_replacements(
+    py: Python<'_>,
     lines: Vec<String>,
     replacements: Vec<(usize, usize, Vec<String>)>,
 ) -> PyResult<Vec<String>> {
-    apply_line_replacements_inner(lines, replacements).map_err(PyValueError::new_err)
+    py.allow_threads(|| apply_line_replacements_inner(lines, replacements))
+        .map_err(PyValueError::new_err)
 }
 
 fn apply_line_replacements_inner(
@@ -225,10 +228,20 @@ fn compute_replacements(
 /// `chunks`: list of `(change_context | None, old_lines, new_lines, is_end_of_file)`.
 #[pyfunction]
 pub fn derive_new_contents(
+    py: Python<'_>,
     original_content: &str,
     path: &str,
     chunks: Vec<Chunk>,
 ) -> PyResult<String> {
+    py.allow_threads(|| derive_new_contents_inner(original_content, path, chunks))
+        .map_err(PyValueError::new_err)
+}
+
+fn derive_new_contents_inner(
+    original_content: &str,
+    path: &str,
+    chunks: Vec<Chunk>,
+) -> Result<String, String> {
     // Move-only hunks preserve the source bytes.
     if chunks.is_empty() {
         return Ok(original_content.to_owned());
@@ -250,10 +263,8 @@ pub fn derive_new_contents(
         })
         .collect();
 
-    let replacements =
-        compute_replacements(&original_lines, path, &chunks).map_err(PyValueError::new_err)?;
-    let new_lines = apply_line_replacements_inner(original_lines, replacements)
-        .map_err(PyValueError::new_err)?;
+    let replacements = compute_replacements(&original_lines, path, &chunks)?;
+    let new_lines = apply_line_replacements_inner(original_lines, replacements)?;
 
     if new_lines.is_empty() {
         return Ok(String::new());
@@ -304,7 +315,7 @@ mod tests {
     #[test]
     fn derive_preserves_trailing_blank_lines() {
         let chunks = vec![(None, vec!["a".into()], vec!["A".into()], false)];
-        let result = derive_new_contents("a\n\n", "f.txt", chunks).unwrap();
+        let result = derive_new_contents_inner("a\n\n", "f.txt", chunks).unwrap();
         assert_eq!(result, "A\n\n");
     }
 
@@ -312,7 +323,7 @@ mod tests {
     fn derive_without_chunks_does_not_modify_newline_shape() {
         for original in ["", "\n", "\n\n", "a", "a\n", "a\n\n", "a\r\n"] {
             assert_eq!(
-                derive_new_contents(original, "f.txt", Vec::new()).unwrap(),
+                derive_new_contents_inner(original, "f.txt", Vec::new()).unwrap(),
                 original
             );
         }
@@ -326,14 +337,15 @@ mod tests {
             vec!["inserted".into()],
             false,
         )];
-        let result = derive_new_contents("start\nmiddle\nend\n", "f.txt", chunks).unwrap();
+        let result = derive_new_contents_inner("start\nmiddle\nend\n", "f.txt", chunks).unwrap();
         assert_eq!(result, "start\nmiddle\ninserted\nend\n");
     }
 
     #[test]
     fn derive_preserves_crlf() {
         let chunks = vec![(None, vec!["middle".into()], vec!["changed".into()], false)];
-        let result = derive_new_contents("start\r\nmiddle\r\nend\r\n", "f.txt", chunks).unwrap();
+        let result =
+            derive_new_contents_inner("start\r\nmiddle\r\nend\r\n", "f.txt", chunks).unwrap();
         assert_eq!(result, "start\r\nchanged\r\nend\r\n");
     }
 }

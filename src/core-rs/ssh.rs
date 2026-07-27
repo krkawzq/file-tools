@@ -5,8 +5,10 @@ use crate::client::{
 };
 use crate::command::{run_process, ProcessOutput, ProcessSpec};
 use crate::constants::{
-    FILE_TRANSFER_OUTPUT_LIMIT, REMOTE_KILL_TIMEOUT, SSH_CLIENT_KIND, TOKEN_COUNTER,
+    DEFAULT_FILE_OPERATION_TIMEOUT, DEFAULT_MAX_TRANSFER_BYTES, MAX_TRANSFER_BYTES,
+    REMOTE_KILL_TIMEOUT, SSH_CLIENT_KIND, TOKEN_COUNTER,
 };
+use crate::fs::FileInfo;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 use std::collections::HashMap;
@@ -163,6 +165,9 @@ pub struct SshClient {
     allow_password_prompt: bool,
     accept_unknown_host_key: bool,
     connect_timeout: f64,
+    operation_timeout: Duration,
+    max_transfer_bytes: usize,
+    control_dir: Option<TempDir>,
     home: String,
     cwd: String,
 }
@@ -177,6 +182,9 @@ impl SshClient {
         key_filename: Option<&str>,
         cwd: &str,
         connect_timeout: f64,
+        operation_timeout: f64,
+        max_transfer_bytes: usize,
+        multiplexing: bool,
         ssh_flags: Vec<String>,
         allow_password_prompt: bool,
         accept_unknown_host_key: bool,
@@ -185,6 +193,11 @@ impl SshClient {
         let username = username.trim();
         if host.is_empty() {
             return Err(CoreError::Value("ssh host is required".to_string()));
+        }
+        if host.starts_with('-') {
+            return Err(CoreError::Value(
+                "ssh host must not start with '-'".to_string(),
+            ));
         }
         if username.is_empty() {
             return Err(CoreError::Value("ssh user is required".to_string()));
@@ -199,6 +212,34 @@ impl SshClient {
                 "connect_timeout must be a positive finite number".to_string(),
             ));
         }
+        if !operation_timeout.is_finite() || operation_timeout <= 0.0 {
+            return Err(CoreError::Value(
+                "operation_timeout must be a positive finite number".to_string(),
+            ));
+        }
+        if max_transfer_bytes == 0 || max_transfer_bytes > MAX_TRANSFER_BYTES {
+            return Err(CoreError::Value(format!(
+                "max_transfer_bytes must be between 1 and {MAX_TRANSFER_BYTES}"
+            )));
+        }
+        #[cfg(unix)]
+        let control_dir = if multiplexing {
+            Some(
+                tempfile::Builder::new()
+                    .prefix("file-tools-ssh-")
+                    .tempdir()
+                    .map_err(|error| {
+                        CoreError::Client(format!("cannot create SSH control directory: {error}"))
+                    })?,
+            )
+        } else {
+            None
+        };
+        #[cfg(not(unix))]
+        let control_dir = {
+            let _ = multiplexing;
+            None
+        };
         let mut client = Self {
             host: host.to_string(),
             port,
@@ -216,6 +257,9 @@ impl SshClient {
             allow_password_prompt,
             accept_unknown_host_key,
             connect_timeout,
+            operation_timeout: Duration::from_secs_f64(operation_timeout),
+            max_transfer_bytes,
+            control_dir,
             home: "~".to_string(),
             cwd: "~".to_string(),
         };
@@ -277,6 +321,17 @@ impl SshClient {
         if let Some(key) = &self.key_filename {
             args.extend(["-i".to_string(), key.clone()]);
         }
+        if let Some(directory) = &self.control_dir {
+            let control_path = directory.path().join("mux-%C");
+            args.extend([
+                "-o".to_string(),
+                "ControlMaster=auto".to_string(),
+                "-o".to_string(),
+                "ControlPersist=60".to_string(),
+                "-o".to_string(),
+                format!("ControlPath={}", control_path.to_string_lossy()),
+            ]);
+        }
         if self.ssh_flags.iter().any(|flag| flag == "-a") {
             args.extend([
                 "-o".to_string(),
@@ -336,6 +391,9 @@ impl SshClient {
             args.extend(["-o".to_string(), "BatchMode=yes".to_string()]);
         }
 
+        // OpenSSH has no universally portable option terminator in every
+        // supported release. connect() rejects option-shaped hosts before the
+        // destination is appended.
         args.push(self.host.clone());
         args.push(remote_command.to_string());
         Ok(SshInvocation {
@@ -384,14 +442,42 @@ impl SshClient {
         remote_command: &str,
         stdin: Option<Vec<u8>>,
     ) -> CoreResult<ProcessOutput> {
-        let output = self.run_ssh(remote_command, stdin, None, FILE_TRANSFER_OUTPUT_LIMIT)?;
+        let output = self.run_ssh(
+            remote_command,
+            stdin,
+            Some(self.operation_timeout),
+            self.max_transfer_bytes,
+        )?;
+        if output.timed_out {
+            return Err(CoreError::Timeout(format!(
+                "SSH {action} timed out after {:.3}s: {path}",
+                self.operation_timeout.as_secs_f64()
+            )));
+        }
+        if output.stdout_omitted_bytes > 0 || output.stderr_omitted_bytes > 0 {
+            return Err(CoreError::TransferLimit(format!(
+                "SSH {action} exceeded the configured transfer limit of {} bytes: {path}",
+                self.max_transfer_bytes
+            )));
+        }
         if output.exit_code == 0 {
             return Ok(output);
         }
         let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(CoreError::Client(format!(
-            "SSH {action} failed: {path}: {message}"
-        )))
+        let rendered = format!(
+            "SSH {action} failed with exit code {}: {path}: {message}",
+            output.exit_code
+        );
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("permission denied")
+            && (lower.contains("publickey") || lower.contains("password"))
+        {
+            Err(CoreError::Authentication(rendered))
+        } else if lower.contains("permission denied") {
+            Err(CoreError::PermissionDenied(rendered))
+        } else {
+            Err(CoreError::Client(rendered))
+        }
     }
 
     fn read_bytes_native(&self, path: &str) -> CoreResult<Vec<u8>> {
@@ -405,19 +491,297 @@ impl SshClient {
         .map(|output| output.stdout)
     }
 
-    fn write_bytes_native(&self, path: &str, data: Vec<u8>) -> CoreResult<()> {
+    fn stat_native(&self, path: &str) -> CoreResult<FileInfo> {
+        let resolved = shell_quote_path(&self.resolve_native(path));
+        let command = format!(
+            "p={resolved}; \
+             if ! test -e \"$p\" && ! test -L \"$p\"; then \
+               printf 'missing\\t0\\t-\\t0\\t-'; exit 0; \
+             fi; \
+             if test -L \"$p\"; then kind=symlink; link=1; \
+             elif test -f \"$p\"; then kind=file; link=0; \
+             elif test -d \"$p\"; then kind=directory; link=0; \
+             else kind=other; link=0; fi; \
+             if test \"$kind\" = file; then size=$(wc -c < \"$p\") || exit 1; \
+             else size=0; fi; \
+             mtime=$(stat -c '%Y' -- \"$p\" 2>/dev/null || stat -f '%m' \"$p\") || exit 1; \
+             signature=$(stat -c '%s:%Y:%i:%y' -- \"$p\" 2>/dev/null || \
+                         stat -f '%z:%m:%i' \"$p\") || exit 1; \
+             printf '%s\\t%s\\t%s\\t%s\\tremote:%s:%s' \
+               \"$kind\" \"$size\" \"$mtime\" \"$link\" \"$kind\" \"$signature\""
+        );
+        let output = self.checked_remote("stat", path, &command, None)?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let fields = text.split('\t').collect::<Vec<_>>();
+        if fields.first() == Some(&"missing") {
+            return Ok(FileInfo::missing());
+        }
+        if fields.len() != 5 {
+            return Err(CoreError::Client(format!(
+                "SSH stat failed: {path}: invalid metadata response"
+            )));
+        }
+        let size = fields[1].parse::<u64>().map_err(|_| {
+            CoreError::Client(format!("SSH stat failed: {path}: invalid file size"))
+        })?;
+        let modified_ns = fields[2]
+            .parse::<u128>()
+            .ok()
+            .map(|seconds| seconds.saturating_mul(1_000_000_000));
+        Ok(FileInfo {
+            exists: true,
+            kind: fields[0].to_string(),
+            size,
+            modified_ns,
+            is_symlink: fields[3] == "1",
+            version: Some(fields[4].to_string()),
+        })
+    }
+
+    fn read_text_window_native(
+        &self,
+        path: &str,
+        offset: i64,
+        limit: usize,
+    ) -> CoreResult<(Vec<u8>, usize, usize, usize, bool)> {
+        let resolved = shell_quote_path(&self.resolve_native(path));
+        let token = control_token();
+        let marker = format!("__FILE_TOOLS_WINDOW_{token}__");
+        let selection = if offset < 0 {
+            let tail = offset.unsigned_abs().min(i64::MAX as u64);
+            format!(
+                "if test \"$total\" -gt {tail}; then start=$((total - {tail} + 1)); \
+                 else start=1; fi; end=$total; truncated=0"
+            )
+        } else {
+            let start = if offset == 0 { 1 } else { offset as u64 };
+            let span = u64::try_from(limit.saturating_sub(1)).unwrap_or(u64::MAX);
+            let requested_end = start.saturating_add(span).min(i64::MAX as u64);
+            format!(
+                "start={start}; end={requested_end}; \
+                 if test \"$end\" -gt \"$total\"; then end=$total; fi; \
+                 if test \"$start\" -gt \"$total\"; then start=$((total + 1)); fi; \
+                 if test \"$end\" -lt \"$total\"; then truncated=1; else truncated=0; fi"
+            )
+        };
+        let command = format!(
+            "p={resolved}; \
+             if ! test -e \"$p\" && ! test -L \"$p\"; then exit 44; fi; \
+             if test -d \"$p\"; then exit 45; fi; \
+             if ! test -f \"$p\"; then exit 46; fi; \
+             total=$(awk 'END {{ print NR }}' \"$p\") || exit 1; \
+             {selection}; \
+             if test \"$start\" -le \"$end\"; then \
+               sed -n \"${{start}},${{end}}p\" \"$p\" || exit 1; \
+             fi; \
+             printf '%s\\t%s\\t%s\\t%s\\t%s\\n' {} \
+               \"$total\" \"$start\" \"$end\" \"$truncated\" >&2",
+            shell_quote(&marker)
+        );
+        let output = self.run_ssh(
+            &command,
+            None,
+            Some(self.operation_timeout),
+            self.max_transfer_bytes,
+        )?;
+        if output.timed_out {
+            return Err(CoreError::Timeout(format!(
+                "SSH read_text_window timed out after {:.3}s: {path}",
+                self.operation_timeout.as_secs_f64()
+            )));
+        }
+        if output.stdout_omitted_bytes > 0 || output.stderr_omitted_bytes > 0 {
+            return Err(CoreError::TransferLimit(format!(
+                "SSH read_text_window exceeded the configured transfer limit of {} bytes: {path}",
+                self.max_transfer_bytes
+            )));
+        }
+        match output.exit_code {
+            0 => {}
+            44 => {
+                return Err(CoreError::NotFound(format!(
+                    "SSH read_text_window failed: {path}: file does not exist"
+                )))
+            }
+            45 => {
+                return Err(CoreError::Client(format!(
+                    "SSH read_text_window failed: {path}: path is a directory"
+                )))
+            }
+            46 => {
+                return Err(CoreError::Client(format!(
+                    "SSH read_text_window failed: {path}: path is not a regular file"
+                )))
+            }
+            _ => {
+                let message = String::from_utf8_lossy(&output.stderr);
+                if message.to_ascii_lowercase().contains("permission denied") {
+                    return Err(CoreError::PermissionDenied(format!(
+                        "SSH read_text_window failed: {path}: {}",
+                        message.trim()
+                    )));
+                }
+                return Err(CoreError::Client(format!(
+                    "SSH read_text_window failed: {path}: {}",
+                    message.trim()
+                )));
+            }
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let metadata = stderr
+            .lines()
+            .find(|line| line.starts_with(&marker))
+            .ok_or_else(|| {
+                CoreError::Client(format!(
+                    "SSH read_text_window failed: {path}: missing window metadata"
+                ))
+            })?;
+        let fields = metadata.split('\t').collect::<Vec<_>>();
+        if fields.len() != 5 {
+            return Err(CoreError::Client(format!(
+                "SSH read_text_window failed: {path}: invalid window metadata"
+            )));
+        }
+        let parse = |value: &str, field: &str| {
+            value.parse::<usize>().map_err(|_| {
+                CoreError::Client(format!(
+                    "SSH read_text_window failed: {path}: invalid {field}"
+                ))
+            })
+        };
+        Ok((
+            output.stdout,
+            parse(fields[1], "total line count")?,
+            parse(fields[2], "start line")?,
+            parse(fields[3], "end line")?,
+            fields[4] == "1",
+        ))
+    }
+
+    fn write_bytes_atomic_native(
+        &self,
+        path: &str,
+        data: Vec<u8>,
+        expected_version: Option<&str>,
+        create_only: bool,
+    ) -> CoreResult<FileInfo> {
+        if data.len() > self.max_transfer_bytes {
+            return Err(CoreError::TransferLimit(format!(
+                "SSH write_bytes failed: {path}: content size {} exceeds the configured transfer limit of {} bytes",
+                data.len(), self.max_transfer_bytes
+            )));
+        }
         let resolved = self.resolve_native(path);
         let parent = Path::new(&resolved)
             .parent()
             .and_then(Path::to_str)
             .unwrap_or("/");
-        let command = format!(
-            "mkdir -p -- {} && cat > {}",
-            shell_quote_path(parent),
-            shell_quote_path(&resolved)
+        let target = shell_quote_path(&resolved);
+        let token = control_token();
+        let expected_check = expected_version.map_or_else(
+            || ":".to_string(),
+            |version| format!("test \"$before\" = {} || exit 73", shell_quote(version)),
         );
-        self.checked_remote("write_bytes", path, &command, Some(data))
+        let create_check = if create_only {
+            "test \"$before\" = missing || exit 73"
+        } else {
+            ":"
+        };
+        let command = format!(
+            "target={target}; \
+             parent={}; mkdir -p -- \"$parent\" || exit 1; \
+             lock=\"${{target}}.file-tools.lock\"; \
+             acquired=0; i=0; \
+             while test \"$i\" -lt 200; do \
+               if mkdir -- \"$lock\" 2>/dev/null; then acquired=1; break; fi; \
+               sleep 0.05; i=$((i + 1)); \
+             done; \
+             test \"$acquired\" = 1 || exit 74; \
+             tmp=\"${{target}}.file-tools-{token}.tmp\"; \
+             cleanup() {{ rm -f -- \"$tmp\"; rmdir -- \"$lock\" 2>/dev/null || true; }}; \
+             trap cleanup EXIT HUP INT TERM; \
+             ft_version() {{ \
+               if ! test -e \"$1\" && ! test -L \"$1\"; then printf missing; return; fi; \
+               if test -L \"$1\"; then kind=symlink; \
+               elif test -f \"$1\"; then kind=file; \
+               elif test -d \"$1\"; then kind=directory; else kind=other; fi; \
+               signature=$(stat -c '%s:%Y:%i:%y' -- \"$1\" 2>/dev/null || \
+                           stat -f '%z:%m:%i' \"$1\") || return 1; \
+               printf 'remote:%s:%s' \"$kind\" \"$signature\"; \
+             }}; \
+             before=$(ft_version \"$target\") || exit 1; \
+             {create_check}; {expected_check}; \
+             umask 077; cat > \"$tmp\" || exit 1; \
+             if test -e \"$target\" && ! test -L \"$target\"; then \
+               chmod --reference=\"$target\" \"$tmp\" 2>/dev/null || \
+               chmod \"$(stat -c '%a' -- \"$target\" 2>/dev/null || \
+                        stat -f '%Lp' \"$target\")\" \"$tmp\" 2>/dev/null || true; \
+             fi; \
+             mv -f -- \"$tmp\" \"$target\" || exit 1; \
+             trap - EXIT HUP INT TERM; rmdir -- \"$lock\" 2>/dev/null || true",
+            shell_quote_path(parent),
+        );
+        match self.checked_remote("write_bytes", path, &command, Some(data)) {
+            Ok(_) => self.stat_native(path),
+            Err(CoreError::Client(message)) if message.contains("exit code 73") => {
+                Err(CoreError::Conflict(format!("write conflict: {path}")))
+            }
+            Err(CoreError::Client(message)) if message.contains("exit code 74") => {
+                Err(CoreError::Timeout(format!("write lock timed out: {path}")))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn write_bytes_native(&self, path: &str, data: Vec<u8>) -> CoreResult<()> {
+        self.write_bytes_atomic_native(path, data, None, false)
             .map(|_| ())
+    }
+
+    fn delete_if_version_native(
+        &self,
+        path: &str,
+        expected_version: Option<&str>,
+    ) -> CoreResult<()> {
+        let resolved = self.resolve_native(path);
+        let target = shell_quote_path(&resolved);
+        let expected_check = expected_version.map_or_else(
+            || ":".to_string(),
+            |version| format!("test \"$before\" = {} || exit 73", shell_quote(version)),
+        );
+        let command = format!(
+            "target={target}; lock=\"${{target}}.file-tools.lock\"; \
+             acquired=0; i=0; \
+             while test \"$i\" -lt 200; do \
+               if mkdir -- \"$lock\" 2>/dev/null; then acquired=1; break; fi; \
+               sleep 0.05; i=$((i + 1)); \
+             done; \
+             test \"$acquired\" = 1 || exit 74; \
+             cleanup() {{ rmdir -- \"$lock\" 2>/dev/null || true; }}; \
+             trap cleanup EXIT HUP INT TERM; \
+             if ! test -e \"$target\" && ! test -L \"$target\"; then exit 44; fi; \
+             if test -L \"$target\"; then kind=symlink; \
+             elif test -f \"$target\"; then kind=file; \
+             elif test -d \"$target\"; then kind=directory; else kind=other; fi; \
+             signature=$(stat -c '%s:%Y:%i:%y' -- \"$target\" 2>/dev/null || \
+                         stat -f '%z:%m:%i' \"$target\") || exit 1; \
+             before=\"remote:${{kind}}:${{signature}}\"; \
+             {expected_check}; rm -f -- \"$target\" || exit 1; \
+             trap - EXIT HUP INT TERM; rmdir -- \"$lock\" 2>/dev/null || true"
+        );
+        match self.checked_remote("delete", path, &command, None) {
+            Ok(_) => Ok(()),
+            Err(CoreError::Client(message)) if message.contains("exit code 44") => Err(
+                CoreError::NotFound(format!("SSH delete failed: {path}: file does not exist")),
+            ),
+            Err(CoreError::Client(message)) if message.contains("exit code 73") => {
+                Err(CoreError::Conflict(format!("delete conflict: {path}")))
+            }
+            Err(CoreError::Client(message)) if message.contains("exit code 74") => {
+                Err(CoreError::Timeout(format!("delete lock timed out: {path}")))
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -433,6 +797,9 @@ impl SshClient {
         key_filename = None,
         cwd = ".",
         connect_timeout = 30.0,
+        operation_timeout = DEFAULT_FILE_OPERATION_TIMEOUT.as_secs_f64(),
+        max_transfer_bytes = DEFAULT_MAX_TRANSFER_BYTES,
+        multiplexing = true,
         ssh_flags = None,
         allow_password_prompt = true,
         accept_unknown_host_key = false
@@ -447,6 +814,9 @@ impl SshClient {
         key_filename: Option<&str>,
         cwd: &str,
         connect_timeout: f64,
+        operation_timeout: f64,
+        max_transfer_bytes: usize,
+        multiplexing: bool,
         ssh_flags: Option<Py<PyAny>>,
         allow_password_prompt: bool,
         accept_unknown_host_key: bool,
@@ -467,6 +837,9 @@ impl SshClient {
                 key_filename,
                 cwd,
                 connect_timeout,
+                operation_timeout,
+                max_transfer_bytes,
+                multiplexing,
                 flags,
                 allow_password_prompt,
                 accept_unknown_host_key,
@@ -498,51 +871,26 @@ impl SshClient {
         py.allow_threads(|| join_posix(&parts))
     }
 
-    fn exists(&self, py: Python<'_>, path: &str) -> bool {
-        let command = format!("test -e {}", shell_quote_path(&self.resolve_native(path)));
-        py.allow_threads(|| self.run_ssh(&command, None, None, 8192))
-            .is_ok_and(|output| output.exit_code == 0)
+    fn stat(&self, py: Python<'_>, path: &str) -> PyResult<FileInfo> {
+        py.allow_threads(|| self.stat_native(path))
+            .map_err(CoreError::into_pyerr)
     }
 
-    fn is_file(&self, py: Python<'_>, path: &str) -> bool {
-        let command = format!("test -f {}", shell_quote_path(&self.resolve_native(path)));
-        py.allow_threads(|| self.run_ssh(&command, None, None, 8192))
-            .is_ok_and(|output| output.exit_code == 0)
+    fn exists(&self, py: Python<'_>, path: &str) -> PyResult<bool> {
+        self.stat(py, path).map(|info| info.exists)
     }
 
-    fn is_dir(&self, py: Python<'_>, path: &str) -> bool {
-        let command = format!("test -d {}", shell_quote_path(&self.resolve_native(path)));
-        py.allow_threads(|| self.run_ssh(&command, None, None, 8192))
-            .is_ok_and(|output| output.exit_code == 0)
+    fn is_file(&self, py: Python<'_>, path: &str) -> PyResult<bool> {
+        self.stat(py, path).map(|info| info.is_file())
+    }
+
+    fn is_dir(&self, py: Python<'_>, path: &str) -> PyResult<bool> {
+        self.stat(py, path).map(|info| info.is_dir())
     }
 
     fn path_info(&self, py: Python<'_>, path: &str) -> PyResult<(bool, bool, bool)> {
-        let path = shell_quote_path(&self.resolve_native(path));
-        let command = format!(
-            "if test -f {path}; then printf f; \
-             elif test -d {path}; then printf d; \
-             elif test -e {path}; then printf o; \
-             else printf n; fi"
-        );
-        let output = py
-            .allow_threads(|| self.run_ssh(&command, None, None, 8192))
-            .map_err(CoreError::into_pyerr)?;
-        if output.exit_code != 0 {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(crate::client::ClientError::new_err(format!(
-                "SSH path_info failed: {path}: {message}"
-            )));
-        }
-        Ok(output
-            .stdout
-            .first()
-            .copied()
-            .map_or((false, false, false), |kind| match kind {
-                b'f' => (true, true, false),
-                b'd' => (true, false, true),
-                b'o' => (true, false, false),
-                _ => (false, false, false),
-            }))
+        self.stat(py, path)
+            .map(|info| (info.exists, info.is_file(), info.is_dir()))
     }
 
     fn read_bytes(&self, py: Python<'_>, path: &str) -> PyResult<Vec<u8>> {
@@ -572,6 +920,31 @@ impl SshClient {
             &format!("SSH read_text failed: {path}"),
         )
         .map_err(CoreError::into_pyerr)
+    }
+
+    #[pyo3(signature = (path, offset, limit, *, encoding = "utf-8"))]
+    fn read_text_window(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        offset: i64,
+        limit: usize,
+        encoding: &str,
+    ) -> PyResult<(String, usize, usize, usize, bool)> {
+        if limit == 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err("limit must be > 0"));
+        }
+        let (bytes, total, start, end, truncated) = py
+            .allow_threads(|| self.read_text_window_native(path, offset, limit))
+            .map_err(CoreError::into_pyerr)?;
+        let text = decode_text(
+            py,
+            &bytes,
+            encoding,
+            &format!("SSH read_text failed: {path}"),
+        )
+        .map_err(CoreError::into_pyerr)?;
+        Ok((text, total, start, end, truncated))
     }
 
     fn write_bytes(&self, py: Python<'_>, path: &str, data: Vec<u8>) -> PyResult<()> {
@@ -606,6 +979,36 @@ impl SshClient {
             .map_err(CoreError::into_pyerr)
     }
 
+    #[pyo3(signature = (
+        path,
+        content,
+        *,
+        encoding = "utf-8",
+        expected_version = None,
+        create_only = false
+    ))]
+    fn write_text_atomic(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        content: Py<PyAny>,
+        encoding: &str,
+        expected_version: Option<&str>,
+        create_only: bool,
+    ) -> PyResult<FileInfo> {
+        let bytes = encode_text(
+            py,
+            &content,
+            encoding,
+            &format!("SSH write_text_atomic failed: {path}"),
+        )
+        .map_err(CoreError::into_pyerr)?;
+        py.allow_threads(|| {
+            self.write_bytes_atomic_native(path, bytes, expected_version, create_only)
+        })
+        .map_err(CoreError::into_pyerr)
+    }
+
     #[pyo3(signature = (path, *, parents = true, exist_ok = true))]
     fn mkdir(&self, py: Python<'_>, path: &str, parents: bool, exist_ok: bool) -> PyResult<()> {
         let resolved = self.resolve_native(path);
@@ -635,10 +1038,18 @@ impl SshClient {
     }
 
     fn delete(&self, py: Python<'_>, path: &str) -> PyResult<()> {
-        let resolved = self.resolve_native(path);
-        let command = format!("rm -- {}", shell_quote_path(&resolved));
-        py.allow_threads(|| self.checked_remote("delete", path, &command, None))
-            .map(|_| ())
+        py.allow_threads(|| self.delete_if_version_native(path, None))
+            .map_err(CoreError::into_pyerr)
+    }
+
+    #[pyo3(signature = (path, *, expected_version = None))]
+    fn delete_if_version(
+        &self,
+        py: Python<'_>,
+        path: &str,
+        expected_version: Option<&str>,
+    ) -> PyResult<()> {
+        py.allow_threads(|| self.delete_if_version_native(path, expected_version))
             .map_err(CoreError::into_pyerr)
     }
 

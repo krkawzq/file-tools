@@ -1,10 +1,11 @@
 use std::cmp;
+use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub struct HeadTailBytes {
     max_bytes: usize,
     head: Vec<u8>,
-    tail: Vec<u8>,
+    tail: VecDeque<u8>,
     total_bytes: usize,
 }
 
@@ -13,7 +14,7 @@ impl HeadTailBytes {
         Self {
             max_bytes,
             head: Vec::new(),
-            tail: Vec::new(),
+            tail: VecDeque::new(),
             total_bytes: 0,
         }
     }
@@ -34,11 +35,27 @@ impl HeadTailBytes {
             return;
         }
         let tail_budget = self.max_bytes - head_budget;
-        self.tail.extend_from_slice(remainder);
-        if self.tail.len() > tail_budget {
-            let overflow = self.tail.len() - tail_budget;
+        if tail_budget == 0 {
+            return;
+        }
+        if remainder.len() >= tail_budget {
+            self.tail.clear();
+            self.tail
+                .extend(remainder[remainder.len() - tail_budget..].iter().copied());
+            return;
+        }
+
+        let overflow = self
+            .tail
+            .len()
+            .saturating_add(remainder.len())
+            .saturating_sub(tail_budget);
+        if overflow > 0 {
+            // VecDeque drops this prefix by advancing its head instead of
+            // shifting the entire retained tail on every output chunk.
             self.tail.drain(..overflow);
         }
+        self.tail.extend(remainder.iter().copied());
     }
 
     pub fn total_bytes(&self) -> usize {
@@ -56,7 +73,9 @@ impl HeadTailBytes {
     pub fn raw_bytes(&self) -> Vec<u8> {
         let mut result = Vec::with_capacity(self.retained_bytes());
         result.extend_from_slice(&self.head);
-        result.extend_from_slice(&self.tail);
+        let (first, second) = self.tail.as_slices();
+        result.extend_from_slice(first);
+        result.extend_from_slice(second);
         result
     }
 
@@ -69,7 +88,73 @@ impl HeadTailBytes {
         let mut result = Vec::with_capacity(self.retained_bytes().saturating_add(marker.len()));
         result.extend_from_slice(&self.head);
         result.extend_from_slice(marker.as_bytes());
-        result.extend_from_slice(&self.tail);
+        let (first, second) = self.tail.as_slices();
+        result.extend_from_slice(first);
+        result.extend_from_slice(second);
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retains_head_and_latest_tail_across_chunks() {
+        let mut buffer = HeadTailBytes::new(7);
+        buffer.append(b"abc");
+        buffer.append(b"def");
+        buffer.append(b"ghijk");
+
+        assert_eq!(buffer.raw_bytes(), b"abchijk");
+        assert_eq!(buffer.total_bytes(), 11);
+        assert_eq!(buffer.retained_bytes(), 7);
+        assert_eq!(buffer.omitted_bytes(), 4);
+    }
+
+    #[test]
+    fn one_large_chunk_keeps_exact_budget() {
+        let mut buffer = HeadTailBytes::new(5);
+        buffer.append(b"abcdef");
+
+        assert_eq!(buffer.raw_bytes(), b"abdef");
+        assert_eq!(buffer.retained_bytes(), 5);
+        assert_eq!(buffer.omitted_bytes(), 1);
+    }
+
+    #[test]
+    fn zero_budget_tracks_total_without_retaining_bytes() {
+        let mut buffer = HeadTailBytes::new(0);
+        buffer.append(b"abc");
+
+        assert!(buffer.raw_bytes().is_empty());
+        assert_eq!(buffer.total_bytes(), 3);
+        assert_eq!(buffer.omitted_bytes(), 3);
+    }
+
+    #[test]
+    fn chunk_boundaries_do_not_change_retained_output() {
+        let input = (0_u8..100).collect::<Vec<_>>();
+        for max_bytes in 0..=20 {
+            let head_budget = max_bytes / 2;
+            let tail_budget = max_bytes - head_budget;
+            let expected = if input.len() <= max_bytes {
+                input.clone()
+            } else {
+                [&input[..head_budget], &input[input.len() - tail_budget..]].concat()
+            };
+
+            for chunk_size in 1..=17 {
+                let mut buffer = HeadTailBytes::new(max_bytes);
+                for chunk in input.chunks(chunk_size) {
+                    buffer.append(chunk);
+                }
+                assert_eq!(
+                    buffer.raw_bytes(),
+                    expected,
+                    "max_bytes={max_bytes} chunk_size={chunk_size}"
+                );
+            }
+        }
     }
 }

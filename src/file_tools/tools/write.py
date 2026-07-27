@@ -39,9 +39,10 @@ async def write(
 
     Relative paths are resolved against ``client.cwd`` and missing parent
     directories are created automatically. Existing regular files are replaced
-    in full without a backup or read-before-write guard. ``content`` is written
-    exactly as supplied: no trailing newline is added, and an empty string
-    creates or truncates the target to a zero-byte file.
+    in full with an atomic same-directory replacement and a version guard
+    against concurrent changes. ``content`` is written exactly as supplied:
+    no trailing newline is added, and an empty string creates or truncates the
+    target to a zero-byte file.
 
     Use this tool only when the entire desired file content is known. Prefer
     :func:`edit` for a small unique replacement and :func:`apply_patch` for
@@ -68,11 +69,14 @@ async def write(
     c = _resolve_client(client)
     path = await c.resolve(file_path)
 
-    exists, _, is_dir = await c.path_info(path)
-    if exists and is_dir:
+    try:
+        info = await c.stat(path)
+    except ClientError as e:
+        raise WriteError(str(e)) from e
+    if info.exists and info.kind == "directory":
         raise WriteIsDirectoryError(f"Destination path is an existing directory: {path}")
 
-    is_new = not exists
+    is_new = not info.exists
     try:
         encoded = content.encode(encoding)
     except (AttributeError, UnicodeError, LookupError) as e:
@@ -80,7 +84,13 @@ async def write(
             f"Failed to serialize content with encoding {encoding!r}: {e}"
         ) from e
     try:
-        await c.write_text(path, content, encoding=encoding)
+        await c.write_text_atomic(
+            path,
+            content,
+            encoding=encoding,
+            expected_version=info.version if info.exists else None,
+            create_only=not info.exists,
+        )
     except ClientError as e:
         raise WriteError(str(e)) from e
 
