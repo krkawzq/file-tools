@@ -340,6 +340,9 @@ async def test_native_ssh_runner_preserves_exit_and_kills_timeout_tree(
         "exec /bin/sh -c \"$remote\"\n"
     )
     fake_ssh.chmod(0o755)
+    fake_setsid = fake_bin / "setsid"
+    fake_setsid.write_text("#!/bin/sh\nexit 1\n")
+    fake_setsid.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
     client = SshClient(
@@ -384,6 +387,13 @@ async def test_ssh_file_operations_are_bounded_atomic_and_versioned(
         "exec /bin/sh -c \"$remote\"\n"
     )
     fake_ssh.chmod(0o755)
+    fake_wc = fake_bin / "wc"
+    fake_wc.write_text(
+        "#!/bin/sh\n"
+        "count=$(PATH=/usr/bin:/bin wc -c)\n"
+        "printf '   %s\\n' \"$count\"\n"
+    )
+    fake_wc.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
     target = tmp_path / "remote.txt"
     target.write_text("a\nb\nc")

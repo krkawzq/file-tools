@@ -122,6 +122,9 @@ fn find_remote_process(stderr: &[u8], prefix: &str) -> Option<RemoteProcess> {
         }
         let mode = fields.next()?;
         let pid = fields.next()?.parse::<i32>().ok()?;
+        if pid <= 0 {
+            continue;
+        }
         return match mode {
             "PGID" => Some(RemoteProcess::ProcessGroup(pid)),
             "PID" => Some(RemoteProcess::Process(pid)),
@@ -414,16 +417,38 @@ impl SshClient {
     }
 
     fn terminate_remote(&self, marker: RemoteProcess) {
-        let target = match marker {
-            RemoteProcess::ProcessGroup(pid) => format!("-{pid}"),
-            RemoteProcess::Process(pid) => pid.to_string(),
+        let command = match marker {
+            RemoteProcess::ProcessGroup(pid) => {
+                let target = format!("-{pid}");
+                format!(
+                    "kill -TERM {target} 2>/dev/null || true; \
+                     i=0; while kill -0 {target} 2>/dev/null && [ \"$i\" -lt 10 ]; do \
+                     sleep 0.1; i=$((i + 1)); done; \
+                     kill -KILL {target} 2>/dev/null || true"
+                )
+            }
+            RemoteProcess::Process(pid) => format!(
+                "table=$(ps -eo pid=,ppid= 2>/dev/null || true); \
+                 ft_descendants() {{ \
+                   parent=\"$1\"; \
+                   printf '%s\\n' \"$table\" | while read -r child parent_id; do \
+                     if [ \"$parent_id\" = \"$parent\" ]; then \
+                       printf '%s\\n' \"$child\"; ft_descendants \"$child\"; \
+                     fi; \
+                   done; \
+                 }}; \
+                 descendants=$(ft_descendants {pid}); targets=\"{pid} $descendants\"; \
+                 kill -TERM $targets 2>/dev/null || true; \
+                 i=0; while [ \"$i\" -lt 10 ]; do \
+                   alive=0; for target in $targets; do \
+                     if kill -0 \"$target\" 2>/dev/null; then alive=1; break; fi; \
+                   done; \
+                   [ \"$alive\" -eq 0 ] && break; \
+                   sleep 0.1; i=$((i + 1)); \
+                 done; \
+                 kill -KILL $targets 2>/dev/null || true"
+            ),
         };
-        let command = format!(
-            "kill -TERM {target} 2>/dev/null || true; \
-             i=0; while kill -0 {target} 2>/dev/null && [ \"$i\" -lt 10 ]; do \
-             sleep 0.1; i=$((i + 1)); done; \
-             kill -KILL {target} 2>/dev/null || true"
-        );
         let _ = self.run_ssh(&command, None, Some(REMOTE_KILL_TIMEOUT), 8192);
     }
 
@@ -513,10 +538,11 @@ impl SshClient {
                 "SSH stat failed: {path}: invalid metadata response"
             )));
         }
-        let size = fields[1].parse::<u64>().map_err(|_| {
+        let size = fields[1].trim().parse::<u64>().map_err(|_| {
             CoreError::Client(format!("SSH stat failed: {path}: invalid file size"))
         })?;
         let modified_ns = fields[2]
+            .trim()
             .parse::<u128>()
             .ok()
             .map(|seconds| seconds.saturating_mul(1_000_000_000));

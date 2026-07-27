@@ -17,15 +17,11 @@
   "skills": "./skills/",
   "mcpServers": {
     "file-tools": {
-      "command": "python",
+      "command": "${CURSOR_PLUGIN_ROOT}/.venv/bin/python",
       "args": [
         "-m",
         "file_tools.cli.mcp_server"
-      ],
-      "cwd": ".",
-      "env": {
-        "PYTHONPATH": "./src"
-      }
+      ]
     }
   },
   "homepage": "https://github.com/krkawzq/file-tools"

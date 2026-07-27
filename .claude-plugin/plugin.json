@@ -16,9 +16,10 @@
   ],
   "mcpServers": {
     "file-tools": {
-      "command": "python",
+      "command": "${CLAUDE_PLUGIN_ROOT}/.venv/bin/python",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/scripts/file_tools_mcp.py"
+        "-m",
+        "file_tools.cli.mcp_server"
       ]
     }
   }

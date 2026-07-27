@@ -1,10 +1,12 @@
 {
   "mcpServers": {
     "file-tools": {
-      "command": "python",
+      "command": "./.venv/bin/python",
       "args": [
-        "./scripts/file_tools_mcp.py"
-      ]
+        "-m",
+        "file_tools.cli.mcp_server"
+      ],
+      "cwd": "."
     }
   }
 }

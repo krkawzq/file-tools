@@ -17,9 +17,10 @@
   "skills": "./skills/",
   "mcpServers": {
     "file-tools": {
-      "command": "python",
+      "command": "${GROK_PLUGIN_ROOT}/.venv/bin/python",
       "args": [
-        "${GROK_PLUGIN_ROOT}/scripts/file_tools_mcp.py"
+        "-m",
+        "file_tools.cli.mcp_server"
       ]
     }
   }

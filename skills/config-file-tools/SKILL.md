@@ -1,114 +1,236 @@
 ---
 name: config-file-tools
-description: Install, build, configure, diagnose, and verify File Tools from either a source checkout or a GitHub-installed plugin for Claude Code, Codex, Cursor, and Grok. Trigger on fresh setup, marketplace/plugin installation, host migration, plugin update, Rust/Python/dependency/launcher changes, or failures to start MCP, import file_tools._core, use fastmcp, or expose all five tools.
+description: Install File Tools into Codex, Claude Code, Grok, or Cursor by downloading the matching GitHub Release wheel into that host's enabled plugin .venv, then pin the host MCP launcher to the venv and verify all five tools. Trigger on fresh setup, marketplace/plugin installation, host migration, plugin update, missing .venv, failed import of file_tools._core, fastmcp missing, launcher/interpreter mismatch, or MCP not exposing all five tools.
 ---
 
 # Configure File Tools
 
-Bring up File Tools through the path the selected host actually runs. Verify each layer: native extension → Python API → CLI/server construction → MCP discovery → host activation.
+Bring File Tools up on **one selected host** by:
 
-## Choose the runtime root
+1. Installing / locating that host's **enabled** plugin copy
+2. Downloading the matching **GitHub Release** wheel for `krkawzq/file-tools`
+3. Installing the wheel into **that plugin root's `.venv`**
+4. Pinning the host MCP entry to the **venv entrypoint** (not bare `python` + `scripts/file_tools_mcp.py`)
+5. Verifying imports and MCP list-tools
 
-Distinguish these workflows before building:
+Do **not** compile with Maturin for marketplace/plugin installs. Do **not** install into a nearby source checkout and expect the host to pick it up.
 
-- **Source development:** build in the checkout containing the code being edited.
-- **GitHub/marketplace installation:** install first, resolve the host's actual installed plugin root, and build there.
+Ask which host to configure when unclear. Teach and execute **only that host's** commands; do not mix Codex / Claude / Grok / Cursor paths.
 
-The remote repository does not carry a portable generated `file_tools._core` binary. Building a nearby checkout does not repair a host that runs a copied or cached plugin directory.
+## Shared pipeline (all hosts)
 
-Confirm the selected root with `realpath`. It must contain `pyproject.toml`, `Cargo.toml`, `src/file_tools/`, `scripts/file_tools_mcp.py`, and the selected host's manifest. Do not infer it from the current working directory or hard-code a cache version.
+After `$FILE_TOOLS_ROOT` is proven for the selected host:
 
-## Install and locate by host
+### 1) Version → Release → wheel
 
-Honor the machine's shell, proxy, and package-install policy. Use an interactive shell when required aliases or functions live in its startup files.
+1. Read `version` from the host manifest inside `$FILE_TOOLS_ROOT` (see per-host table).
+2. Normalize: strip any `+…` local suffix (`0.1.0+codex.…` → `0.1.0`).
+3. Prefer tag `v<version>`; if missing, try `<version>`.
+4. Download abi3 wheels for that tag from **`krkawzq/file-tools`**, keep only the asset for **this OS/CPU**:
 
-| Host | GitHub installation | Resolve the installed root |
-|---|---|---|
-| Codex | `codex plugin marketplace add krkawzq/file-tools`, then `codex plugin add file-tools@file-tools --json` | Capture `installedPath` from the JSON result. For an existing install, confirm `file-tools@file-tools` with `codex plugin list` and inspect the configured plugin/cache metadata. Do not select `file-tools@personal` when GitHub was requested. |
-| Claude Code | `claude plugin marketplace add krkawzq/file-tools`, then `claude plugin install file-tools@file-tools` | Use `claude plugin list` / `claude plugin details file-tools@file-tools` and the host's plugin metadata to identify the enabled installed copy. Runtime paths use `${CLAUDE_PLUGIN_ROOT}`. |
-| Grok | `grok plugin marketplace add krkawzq/file-tools`, then `grok plugin install file-tools --trust` | Use `grok plugin list` / `grok plugin details file-tools` and the host's plugin metadata to identify the enabled installed copy. Runtime paths use `${GROK_PLUGIN_ROOT}`. |
-| Cursor | Install the GitHub repository through the available Cursor marketplace or team catalog | Inspect `.cursor-plugin/plugin.json` plus Cursor's installed-plugin details/config and resolve the copy Cursor actually launches. Do not substitute the development checkout unless Cursor is explicitly configured to use it. |
-
-Add a marketplace only when it is not already configured. Refresh or update it with that host's native command when the user requests the latest revision. Prefer a machine-readable install result when available; otherwise use host details/config. Treat a filesystem search of host caches as a last resort and confirm the candidate's name, version, manifest, and enabled registration before building it.
-
-## Build in the selected root
-
-Run from the resolved source or installed plugin root:
+| Platform | Prefer asset name containing |
+|---|---|
+| Linux x86_64 | `manylinux` + `x86_64` |
+| Linux aarch64 | `manylinux` + `aarch64` / `arm64` |
+| macOS arm64 | `macosx` + `arm64` / `universal2` |
+| macOS x86_64 | `macosx` + `x86_64` / `universal2` |
+| Windows AMD64 | `win_amd64` |
 
 ```bash
-cd "$FILE_TOOLS_ROOT"
-uv sync --extra dev
-uv run maturin develop --release --uv
+TAG="v0.1.0"   # normalized plugin version
+WORKDIR="$(mktemp -d)"
+gh release download "$TAG" -R krkawzq/file-tools --dir "$WORKDIR" --pattern 'file_tools-*.whl'
+# Keep only the matching OS/arch wheel.
 ```
 
-This creates a root-local `.venv`, resolves Python dependencies, builds the pyo3 **CPython 3.12+ abi3** extension, and installs the package editable. Expect a generated file such as `src/file_tools/_core.abi3.so`.
+If the tag or matching wheel is missing, stop and report plugin version, attempted tag, platform, and available assets. Do not fall back to building from source unless the user explicitly asks.
 
-Re-run `uv sync --extra dev` when lock/dependencies change. Re-run Maturin after Rust, Python binding, build metadata, OS, architecture, or Python-floor changes. Never copy a native extension from another checkout, host, OS, or architecture.
-
-For a plugin update, resolve the installed root again: hosts commonly install a new version into a new cache directory, leaving the previous compiled directory intact but unused.
-
-## Match the host launcher
-
-Read the selected host manifest and its effective MCP config before changing it:
-
-| Host surface | Expected entry |
-|---|---|
-| Codex | `.mcp.json` → `python ./scripts/file_tools_mcp.py` |
-| Claude Code | `.claude-plugin/plugin.json` → `python ${CLAUDE_PLUGIN_ROOT}/scripts/file_tools_mcp.py` |
-| Grok | `.grok-plugin/plugin.json` → `python ${GROK_PLUGIN_ROOT}/scripts/file_tools_mcp.py` |
-| Cursor | `.cursor-plugin/plugin.json` → `python -m file_tools.cli.mcp_server` with plugin-root `cwd` and `PYTHONPATH=./src` |
-
-The portable launcher resolves its root from its own file and prepends `<root>/src`. The effective interpreter must still provide `fastmcp` and load the native extension from that same root.
-
-If `<root>/.venv/bin/python` succeeds but the host's exact `python` fails, fix the interpreter mismatch in a supported machine-local host config or launcher override. Prefer an absolute `<root>/.venv/bin/python` for a machine-local pin. Do not commit a machine-specific cache path to a distributable manifest, and re-resolve it after plugin updates.
-
-## Verify the installed copy in layers
-
-Set `FILE_TOOLS_ROOT` to the proven runtime root, not a convenient checkout:
+### 2) Install into plugin `.venv`
 
 ```bash
 cd "$FILE_TOOLS_ROOT"
+uv venv .venv --python 3.12
+uv pip install --python .venv "$WORKDIR"/file_tools-*-cp312-abi3-*.whl   # the one matching this machine
+```
 
-# 1) Build artifact and plugin-local environment
-find src/file_tools -maxdepth 1 -type f -name "_core*.so" -print
+- `.venv` must live in `$FILE_TOOLS_ROOT` only.
+- The wheel must pull runtime deps (including `fastmcp`).
+- After plugin updates, hosts often activate a **new** directory: re-resolve `$FILE_TOOLS_ROOT`, then repeat.
+
+### 3) Why the launcher must change
+
+Shipping manifests often still say bare `python` + `scripts/file_tools_mcp.py`. That script prepends `<root>/src` on `sys.path`, which can shadow the wheel install and miss `file_tools._core`.
+
+For a Release-wheel setup, the effective MCP command must be the plugin venv entrypoint:
+
+| OS | Preferred command |
+|---|---|
+| POSIX | `$FILE_TOOLS_ROOT/.venv/bin/file-tools-mcp` |
+| POSIX (equiv.) | `$FILE_TOOLS_ROOT/.venv/bin/python` with args `-m` `file_tools.cli.mcp_server` |
+| Windows | `$FILE_TOOLS_ROOT\.venv\Scripts\file-tools-mcp.exe` |
+
+Apply this as a **machine-local** host override / user MCP config. Do **not** commit a machine-specific cache path into the distributable plugin manifest. Re-resolve the absolute path after every plugin update.
+
+### 4) Verify
+
+```bash
+cd "$FILE_TOOLS_ROOT"
 .venv/bin/python -c "from file_tools._core import count_lines; from file_tools import read, write, edit, apply_patch, bash; print('plugin venv imports OK')"
-
-# 2) Exact default launcher interpreter
-PYTHONPATH="$FILE_TOOLS_ROOT/src" python -c "import file_tools; import file_tools.cli.mcp_server; print('host interpreter imports OK', file_tools.__file__)"
-
-# 3) CLI and server construction
 .venv/bin/file-tools --help
 .venv/bin/python -c "from file_tools.cli.mcp_server import create_mcp_server; create_mcp_server(); print('server construction OK')"
 ```
 
-Then invoke the effective host MCP entry or perform a stdio list-tools request against it. **MCP discovery must list exactly:** `read`, `write`, `edit`, `apply_patch`, `bash`. Process start or imports alone are insufficient.
+Then exercise the **effective** host MCP entry (or stdio list-tools). Discovery must list exactly: `read`, `write`, `edit`, `apply_patch`, `bash`.
 
-Finally, verify the selected host reports the intended remote plugin as installed and enabled. Restart or open a new agent thread after install, update, build, or config changes when that host caches skills or MCP processes.
+Restart or open a new agent thread when the host caches skills / MCP processes.
 
-For substantive source changes, additionally run:
+---
+
+## Codex
+
+**Identity:** `file-tools@file-tools` (marketplace name `file-tools`). Do not use `file-tools@personal` when GitHub was requested.
+
+**Install / refresh**
 
 ```bash
-uv run pytest
-cargo test --no-default-features
+codex plugin marketplace add krkawzq/file-tools          # only if missing
+codex plugin marketplace upgrade file-tools              # when user wants latest marketplace snapshot
+codex plugin add file-tools@file-tools --json
 ```
+
+**Resolve `$FILE_TOOLS_ROOT`**
+
+- Prefer `installedPath` from `codex plugin add … --json`.
+- Already installed: `codex plugin list --json` and confirm `pluginId` is `file-tools@file-tools` with `installed` + `enabled`. Then take the path from a fresh `codex plugin add file-tools@file-tools --json` (idempotent path report) or the enabled cache dir under `~/.codex/plugins/cache/file-tools/file-tools/<version>/`.
+- Confirm with `realpath`. Root must contain `.codex-plugin/plugin.json`, `.mcp.json`, `skills/`, `scripts/`.
+
+**Version file:** `.codex-plugin/plugin.json` → `version` (may include `+codex.…`; strip for the Release tag).
+
+**Stock MCP (do not rely on as-is):** `.mcp.json` → `command: python`, `args: ["./scripts/file_tools_mcp.py"]` with plugin-root cwd.
+
+**Machine-local pin:** point Codex's effective MCP for this plugin at absolute `.venv/bin/file-tools-mcp` (or `.venv/bin/python -m file_tools.cli.mcp_server`). Keep the override outside the published manifest.
+
+**Done when:** `codex plugin list` shows `file-tools@file-tools` enabled, venv imports pass, and MCP list-tools returns all five tools.
+
+---
+
+## Claude Code
+
+**Identity:** `file-tools@file-tools`.
+
+**Install / refresh**
+
+```bash
+claude plugin marketplace add krkawzq/file-tools         # only if missing
+claude plugin marketplace update file-tools              # when user wants latest
+claude plugin install file-tools@file-tools              # scope: user (default) / project / local via -s
+```
+
+**Resolve `$FILE_TOOLS_ROOT`**
+
+- `claude plugin list --json` → entry `id` = `file-tools@file-tools`, `enabled` = true → use `installPath`.
+- Fallback: `~/.claude/plugins/installed_plugins.json` → `plugins["file-tools@file-tools"][].installPath` for the active scope.
+- Runtime expansion in manifests: `${CLAUDE_PLUGIN_ROOT}` (= that install path).
+- Confirm with `realpath`. Root must contain `.claude-plugin/plugin.json`, `skills/`, `scripts/`.
+
+**Version file:** `.claude-plugin/plugin.json` → `version`.
+
+**Stock MCP (do not rely on as-is):** `.claude-plugin/plugin.json` → `python ${CLAUDE_PLUGIN_ROOT}/scripts/file_tools_mcp.py`.
+
+**Machine-local pin:** override the MCP `command` to absolute `$FILE_TOOLS_ROOT/.venv/bin/file-tools-mcp` (or venv `python` + `-m file_tools.cli.mcp_server`). Do not leave bare `python` if it is not the plugin venv.
+
+**Done when:** plugin enabled at the intended scope, venv imports pass, MCP list-tools returns all five tools. Restart Claude Code after install/update when required.
+
+---
+
+## Grok
+
+**Identity:** plugin name `file-tools`. MCP stays inactive until the plugin is **trusted**; skills load when **enabled**.
+
+**Install / refresh**
+
+```bash
+grok plugin marketplace add krkawzq/file-tools           # only if missing
+grok plugin marketplace update                           # when user wants latest sources
+grok plugin install file-tools --trust                   # from the marketplace catalog
+# equivalent direct install:
+# grok plugin install krkawzq/file-tools --trust
+grok plugin enable file-tools                            # if list shows installed but disabled
+```
+
+**Resolve `$FILE_TOOLS_ROOT`**
+
+- `grok plugin list --json` and `grok plugin details file-tools` — confirm installed / enabled / trusted.
+- Discover path from the Plugins UI path field, `grok inspect --json`, or the enabled copy under discovery roots (priority): session/`--plugin-dir`, project `.grok/plugins/`, user `~/.grok/plugins/`, then `[plugins].paths`.
+- Runtime expansion: `${GROK_PLUGIN_ROOT}` (aliases `${CLAUDE_PLUGIN_ROOT}` may also be set).
+- Confirm with `realpath`. Root must contain `.grok-plugin/plugin.json`, `skills/`, `scripts/`.
+
+**Version file:** `.grok-plugin/plugin.json` → `version`.
+
+**Stock MCP (do not rely on as-is):** `.grok-plugin/plugin.json` → `python ${GROK_PLUGIN_ROOT}/scripts/file_tools_mcp.py`.
+
+**Machine-local pin:** override to absolute `$FILE_TOOLS_ROOT/.venv/bin/file-tools-mcp` (or venv python `-m file_tools.cli.mcp_server`). If MCP is blocked, reinstall with `--trust` or place under `~/.grok/plugins/` (auto-trusted). Reload plugins (`r` in Plugins tab) or start a new session after changes.
+
+**Done when:** `grok plugin list` shows enabled, trust allows MCP, venv imports pass, MCP list-tools returns all five tools.
+
+---
+
+## Cursor
+
+**Identity:** plugin `file-tools` with `.cursor-plugin/plugin.json`. Distribution is via **Cursor Marketplace / team catalog / Customize**, not the Codex/Claude/Grok CLI flow.
+
+**Install / refresh**
+
+- Install or update **file-tools** from Cursor Marketplace, team marketplace, or the host's Customize → Plugins UI using repo `krkawzq/file-tools`.
+- There is no portable `cursor plugin add` equivalent to teach as the primary path; use the UI/catalog the user actually has.
+
+**Resolve `$FILE_TOOLS_ROOT`**
+
+- Find the enabled installed copy Cursor actually launches (often under `~/.cursor/plugins/cache/<marketplace-or-source>/file-tools/<version-or-sha>/`, or a team/local plugins path).
+- Confirm the directory contains `.cursor-plugin/plugin.json` and `skills/`. Prefer host UI / plugin details over guessing; treat filesystem search as last resort and verify name, version, and that it is the enabled registration.
+- Confirm with `realpath`. Do not substitute a development checkout unless Cursor is explicitly configured to use it.
+
+**Version file:** `.cursor-plugin/plugin.json` → `version`.
+
+**Stock MCP (do not rely on as-is):** `.cursor-plugin/plugin.json` inline server:
+
+- `command: python`
+- `args: ["-m", "file_tools.cli.mcp_server"]`
+- `cwd: "."` (plugin root)
+- `env.PYTHONPATH: "./src"` ← wrong for a wheel-in-`.venv` install; do not keep this once the venv is authoritative
+
+**Machine-local pin:**
+
+- `command`: absolute `$FILE_TOOLS_ROOT/.venv/bin/python` (Windows: `…\.venv\Scripts\python.exe`)
+- `args`: `["-m", "file_tools.cli.mcp_server"]`
+- `cwd`: plugin root (or omit if using `file-tools-mcp` console script)
+- Remove `PYTHONPATH=./src` for the wheel install (package lives in the venv site-packages).
+
+Alternatively use absolute `.venv/bin/file-tools-mcp` as `command` with empty/no module args.
+
+**Done when:** Cursor shows the plugin enabled, venv imports pass, and Agent/MCP list-tools returns all five tools. Reload the window or start a new agent chat after install/update when MCP is cached.
+
+---
 
 ## Diagnose by layer
 
 | Symptom | Likely cause and check |
 |---|---|
-| Plugin is enabled but `file_tools._core` is missing | The GitHub-installed copy was never built, or a different root was built. Resolve the enabled root and build there. |
-| A development checkout imports, but the host fails | The host runs another cached/copied root. Inspect the effective plugin registration and launcher path. |
-| `.venv/bin/python` works, host `python` lacks `fastmcp` | The launcher uses a different interpreter. Apply a supported machine-local interpreter override. |
-| Native import reports a bad ABI | Check CPython 3.12+, OS, and architecture; rebuild in the runtime root. |
-| Update reintroduces the import failure | The host activated a new version directory. Resolve and build the new installed root. |
-| CLI works, host cannot start MCP | Compare effective `command`, `args`, `cwd`, environment, and plugin-root expansion with the host manifest. |
-| Server starts, tools are missing | Perform MCP list-tools and inspect registration; do not stop at process startup. |
-| Tools work locally, SSH operations fail | Diagnose auth, host keys, port, and remote `cwd`; this is runtime client configuration, not a build issue. |
+| No matching release / wheel | Wrong tag vs plugin version, or assets missing for this OS/arch. |
+| Plugin enabled but `_core` missing | Wheel never installed into the **enabled** root's `.venv`, or wrong root. |
+| Checkout works, host fails | Host runs another cached root. Re-resolve that host's enabled path. |
+| `.venv` works, host lacks `fastmcp` / `_core` | Still on bare `python` or `scripts/file_tools_mcp.py` + `src` shadow. Pin venv entrypoint. |
+| Cursor imports wrong package | Leftover `PYTHONPATH=./src`. Drop it; use venv python/`file-tools-mcp`. |
+| Grok MCP blocked | Plugin not trusted. `--trust` or `~/.grok/plugins/`. |
+| Update breaks again | New version directory activated. Re-resolve, re-download, recreate `.venv`, re-pin absolute launcher. |
+| Server starts, tools missing | MCP list-tools required; do not stop at process start. |
+| SSH fails only | Auth / keys / port / remote `cwd` — not an install issue. |
 
 ## Integrity
 
-- Keep `pyproject.toml` and `uv.lock` authoritative; do not hand-edit `.venv`.
-- Keep Cargo features aligned with `[tool.maturin]`.
-- Preserve host-specific manifests and root variables; do not force one host's paths or commands onto the others.
+- One host per run; preserve that host's identity (`file-tools@file-tools` vs `file-tools`), manifests, and root variables.
+- Install only Release assets from `krkawzq/file-tools` that match the plugin version and this platform.
+- Keep `.venv` plugin-local; never copy native modules across roots/OS/arch.
+- Do not commit machine-specific cache paths into distributable manifests.
 - Do not weaken SSH host-key checks or embed credentials in smoke tests.
-- Report the exact host, plugin identity, runtime root, verified layer, and remaining failure when setup cannot finish.
+- Report host, plugin id, `$FILE_TOOLS_ROOT`, release tag, wheel asset, launcher used, verified layer, and remaining failure when setup cannot finish.

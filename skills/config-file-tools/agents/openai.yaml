@@ -1,4 +1,4 @@
 interface:
   display_name: "Configure File Tools"
-  short_description: "Install, build, and verify File Tools across agent hosts"
-  default_prompt: "Use $config-file-tools to install or rebuild File Tools in the runtime root used by my selected agent host, then verify MCP discovery."
+  short_description: "Install Release wheels into Codex/Claude/Grok/Cursor plugin .venv and verify MCP"
+  default_prompt: "Use $config-file-tools to install the matching GitHub Release wheel into my selected host's plugin .venv, pin the MCP launcher to that venv, then verify MCP discovery."
