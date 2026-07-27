@@ -1,0 +1,175 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build wheels only (skip creating/updating a GitHub Release)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Keep release builds within GitHub-hosted runner memory limits.
+  CARGO_PROFILE_RELEASE_LTO: "thin"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+
+jobs:
+  # One abi3 wheel per OS/CPU is enough: tool.maturin uses pyo3/abi3-py312.
+  wheels:
+    name: wheel (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64-manylinux
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: "2_17"
+          - name: linux-x86_64-musllinux
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: musllinux_1_2
+          - name: linux-aarch64-manylinux
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: "2_17"
+          - name: linux-aarch64-musllinux
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: musllinux_1_2
+          - name: windows-x86_64
+            os: windows-latest
+            target: x64
+            manylinux: "off"
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64
+            manylinux: "off"
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64
+            manylinux: "off"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
+          if [[ -z "$version" ]]; then
+            echo "could not read version from pyproject.toml" >&2
+            exit 1
+          fi
+          if [[ "$tag" != "$version" ]]; then
+            echo "tag v$tag does not match pyproject.toml version $version" >&2
+            exit 1
+          fi
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist
+          sccache: "true"
+          python-version: "3.12"
+
+      - name: Smoke-import wheel
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [[ ${#wheels[@]} -eq 0 ]]; then
+            echo "no wheels in dist/" >&2
+            exit 1
+          fi
+          echo "built: ${wheels[*]}"
+          python -m venv .ci-smoke
+          if [[ -x .ci-smoke/Scripts/python.exe ]]; then
+            PY=.ci-smoke/Scripts/python.exe
+          else
+            PY=.ci-smoke/bin/python
+          fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install "${wheels[@]}"
+          "$PY" -c "import file_tools; import file_tools._core"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub Release
+    needs: wheels
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push'
+      || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List wheels
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [[ ${#wheels[@]} -eq 0 ]]; then
+            echo "no wheels downloaded" >&2
+            exit 1
+          fi
+          ls -lh dist/*.whl
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml | head -n 1)"
+            if [[ -z "$version" ]]; then
+              echo "could not read version from pyproject.toml" >&2
+              exit 1
+            fi
+            echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: dist/*.whl
+          fail_on_unmatched_files: true
+          # workflow_dispatch on a branch can draft until the tag is pushed.
+          draft: ${{ github.ref_type != 'tag' }}
