@@ -41,6 +41,3 @@ features = ["pyo3/extension-module", "pyo3/abi3-py312"]
 addopts = ["--import-mode=importlib"]
 pythonpath = ["src"]
 testpaths = ["src/tests"]
-markers = [
-    "performance: lightweight performance regression checks",
-]

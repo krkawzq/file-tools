@@ -20,36 +20,6 @@ class _FakeMcp:
         return function
 
 
-def test_apply_patch_doc_shows_exact_control_and_context_prefixes() -> None:
-    mcp = _FakeMcp()
-    register_tools(mcp)
-    doc = inspect.cleandoc(mcp.tools["apply_patch"].__doc__ or "")
-
-    assert "documentation" in doc
-    assert "delimiters only" in doc
-    assert (
-        "```text\n"
-        "*** Begin Patch\n"
-        "*** Update File: settings.txt\n"
-        "@@\n"
-        " [theme]\n"
-        "-color=blue\n"
-        "+color=green\n"
-        "*** End Patch\n"
-        "```"
-    ) in doc
-
-
-def test_edit_doc_explains_create_prepend_and_append_modes() -> None:
-    mcp = _FakeMcp()
-    register_tools(mcp)
-    doc = inspect.cleandoc(mcp.tools["edit"].__doc__ or "")
-
-    assert "complete new-file content" in doc
-    assert "``append`` is not provided by this tool" in doc
-    assert "combined with a non-empty ``old_string``" in doc
-
-
 def test_registered_mcp_tools_are_async() -> None:
     mcp = _FakeMcp()
     register_tools(mcp)
@@ -69,7 +39,7 @@ async def test_registered_mcp_tools_execute_against_local_client(
 
     cwd = str(tmp_path)
     write_result = await mcp.tools["write"](
-        "example.txt", "hello\n", cwd, connection="local"
+        "example.txt", "hello\n", cwd, client="local"
     )
     assert "wrote 6 bytes" in write_result
     assert (
@@ -77,19 +47,19 @@ async def test_registered_mcp_tools_execute_against_local_client(
             "example.txt",
             cwd,
             show_line_numbers=False,
-            connection="local",
+            client="local",
         )
         == "hello\n"
     )
 
     edit_result = await mcp.tools["edit"](
-        "example.txt", "hello", "world", cwd, connection="local"
+        "example.txt", "hello", "world", cwd, client="local"
     )
     assert edit_result.startswith("replaced ")
     assert "1 matches" in edit_result
 
     create_result = await mcp.tools["edit"](
-        "created.txt", "", "created", cwd, connection="local"
+        "created.txt", "", "created", cwd, client="local"
     )
     assert create_result.endswith("created.txt")
     assert create_result.startswith("created ")
@@ -100,7 +70,7 @@ async def test_registered_mcp_tools_execute_against_local_client(
         "header\n",
         cwd,
         prepend=True,
-        connection="local",
+        client="local",
     )
     assert prepend_result.endswith("example.txt")
     assert prepend_result.startswith("prepended to ")
@@ -113,21 +83,10 @@ async def test_registered_mcp_tools_execute_against_local_client(
         "+patched\n"
         "*** End Patch\n",
         cwd,
-        connection="local",
+        client="local",
     )
     assert "modified=['example.txt']" in patch_result
     assert (tmp_path / "example.txt").read_text() == "header\npatched\n"
 
-    bash_out = await mcp.tools["bash"]("echo thin-wrapper", cwd, connection="local")
-    assert "thin-wrapper" in bash_out
-
-
-def test_mcp_schema_uses_named_connections_without_credentials() -> None:
-    mcp = _FakeMcp()
-    register_tools(mcp)
-
-    for tool in mcp.tools.values():
-        parameters = inspect.signature(tool).parameters
-        assert "connection" in parameters
-        assert "ssh_password" not in parameters
-        assert "ssh_host" not in parameters
+    bash_out = await mcp.tools["bash"]("echo bash-ok", cwd, client="local")
+    assert "bash-ok" in bash_out

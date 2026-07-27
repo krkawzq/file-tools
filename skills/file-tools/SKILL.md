@@ -1,43 +1,92 @@
 ---
 name: file-tools
-description: Prefer the system's built-in file reading, editing, and terminal tools for ordinary local work. Load the File Tools MCP skill only when the user explicitly asks to load or use it, or for sustained SSH-backed work such as remote file reads or edits and longer-running but bounded foreground commands. Do not trigger this skill merely because a task involves files or shell commands.
+description: Prefer the host's built-in Read / Write / Edit / Bash for ordinary local work. Use File Tools MCP when the user explicitly asks for it, or for sustained SSH-backed file ops and bounded foreground commands. Do not trigger merely because a task involves files or shell.
 ---
 
 # File Tools
 
-Use the File Tools MCP tools for filesystem and foreground command work in an explicitly selected workspace. Always pass `cwd`; never infer a remote working directory.
+Use the File Tools MCP tools — `read`, `write`, `edit`, `apply_patch`, `bash` — for filesystem and foreground command work in an **explicit** workspace. Always pass `cwd`. Never infer a remote working directory from local paths or chat context.
 
-## Follow the core workflow
+Agent-facing contracts are on the MCP tool docstrings; follow those details for parameters and formats. This skill covers selection, sequencing, and safety.
 
-1. Establish the target workspace and choose `client="local"` or `client="ssh"`.
-2. Inspect the relevant files before preserving or changing existing content.
-3. Choose the least destructive tool that expresses the intended operation.
-4. Review changed files or run a bounded verification command before reporting completion.
+## When to use
 
-## Choose the operation
+| Situation | Action |
+|---|---|
+| Ordinary local files / shell | Host built-ins first |
+| User explicitly asks for File Tools | Use these MCP tools |
+| Sustained **SSH** reads/edits/patches/commands | File Tools with `client="ssh"` |
+| Need uniqueness-checked edit, structured multi-file patch, or bounded remote shell | File Tools |
 
-- Use `read` for UTF-8 text, line windows, or tail reads with a negative `offset`. Set `show_line_numbers=false` when exact source text is needed for a later edit or comparison. Continue from the next offset when a read is truncated.
-- Use `edit` for a unique literal replacement, new-file creation with `old_string=""`, or explicit prepend. Matching tries exact text first and then ignores trailing whitespace per line. If matching returns zero or multiple occurrences, read a narrower region and retry with more context; do not guess. Use `replace_all=true` only when every occurrence should change.
-- Use `apply_patch` for coordinated add, update, delete, move, append, or multi-file changes. Pass the structured patch directly, without Markdown fences or unified-diff headers. The whole patch is preflighted before writes begin, but low-level write failures are not transactionally rolled back.
-- Use `write` only when complete replacement is intended. It creates missing parent directories, overwrites an existing regular file without a backup, and does not add a trailing newline automatically.
-- Use `bash` for foreground, non-interactive command execution. Set a finite timeout for commands that may wait or recurse, bound retained output, and provide `stdin` explicitly when needed. It does not provide a reusable shell, PTY, sandbox, approval gate, or background-task manager.
+If the MCP server is unavailable, say so — do not imply File Tools ran.
 
-## Select the client
+## Core workflow
 
-- For local work, set `client="local"` and use the target workspace as `cwd`.
-- For remote work, set `client="ssh"` and pass `ssh_host`, a positive `ssh_port`, `ssh_user`, and the remote `cwd`. There is no implicit port 22 fallback.
-- Prefer key-based SSH authentication. Do not place passwords, private-key contents, or other secrets in messages, patches, command text, or committed files.
-- Keep unknown-host-key acceptance disabled unless the user explicitly accepts the security tradeoff.
-- Treat remote paths as paths on the SSH host. Confirm the remote workspace instead of reusing a local-only path assumption.
+1. Fix **workspace + client**: `client="local"` or `client="ssh"`, always with `cwd`.
+2. **Read** before changing anything that must be preserved.
+3. Pick the **least destructive** tool that expresses the intent.
+4. After writes, **re-read** or run a bounded check before claiming done.
 
-## Preserve data and execution control
+## Choose the tool
 
-- Read before modifying whenever existing content must be preserved; treat `write` and patch deletions as destructive.
-- Keep edits scoped to the selected workspace and the user's request. Resolve exact targets before overwriting, deleting, or moving files.
-- Review the affected files after `edit`, `write`, or `apply_patch`; do not equate a successful tool call with semantic correctness.
-- Treat `bash` as arbitrary code execution with the selected client's permissions. Do not run destructive commands or intentionally detached processes without explicit user intent and a clear lifecycle owner.
-- On timeout, inspect the returned exit status and partial output. Do not silently retry with an unbounded timeout.
+| Need | Tool |
+|---|---|
+| Inspect text / logs / source windows | `read` |
+| One unique literal replace, create file, or prepend | `edit` |
+| Multi-file change, move, delete, EOF append, structured hunks | `apply_patch` |
+| Full-file body create or replace | `write` |
+| Diagnostics, builds, tests, other shell | `bash` |
 
-## Use alongside host-native tools
+### `read`
 
-Prefer the host's built-in file and terminal tools by default. Load and use File Tools only when the user explicitly requests it or when sustained SSH-backed work requires remote file reads, edits, patches, or longer-running but bounded foreground commands. Do not select File Tools for ordinary local work solely because it offers different matching or line-reading semantics. If the MCP server is unavailable, report that limitation rather than implying that File Tools performed the work.
+- Defaults: `offset=1`, `limit=2000`, `show_line_numbers=true`.
+- Negative `offset` → tail last N lines (`limit` ignored for window size).
+- Empty files and non-regular paths error.
+- For a later `edit`, set **`show_line_numbers=false`** so prefixes are not copied into `old_string`.
+- If truncated, continue from the next 1-based line after the window.
+
+### `edit`
+
+Three modes only:
+
+1. **Replace** — unique match by default; exact text first, then per-line trailing-whitespace tolerance. On 0 or many matches: narrow the region, add context, retry — do not guess. `replace_all=true` only when every occurrence should change.
+2. **Create** — `old_string=""`; fails if the path already exists.
+3. **Prepend** — `old_string=""` + `prepend=true` on an existing file.
+
+No append parameter. Append at EOF via `apply_patch` (bare `@@`, only `+` lines). No auto trailing newline.
+
+### `apply_patch`
+
+- Body only: `*** Begin Patch` … `*** End Patch`. No Markdown fences, no unified-diff headers.
+- Preflighted; low-level commit failures → best-effort deterministic rollback.
+- Control markers in column 1; Update content lines need space / `-` / `+` prefixes.
+- **Append at EOF**: `*** Update File` + bare `@@` + only `+` lines.
+- **Move**: `*** Update File` + `*** Move to: dest` (dest must not exist).
+- Delete/move are destructive after destination writes succeed.
+
+### `write`
+
+- Full-file create or replace only. Missing parents created; existing regular files overwritten with no backup.
+- Prefer `edit` / `apply_patch` when any prior content must be kept.
+
+### `bash`
+
+- Foreground only. Default timeout **120s** (`0` disables). Timeout → exit **124** + partial output.
+- Full shell semantics; no sandbox, PTY, reusable session, or background-task manager.
+- Prefer file tools for mutations; use `bash` for run/check/build/test.
+- Bound output with `max_output_bytes` when needed; pass `stdin` explicitly when required.
+
+## Client and SSH
+
+- **Local**: `client="local"`, workspace as `cwd`.
+- **SSH**: `client="ssh"` + `ssh_host` + positive `ssh_port` + `ssh_user` + remote `cwd`. **No implicit port 22.**
+- Prefer keys/agent. Do not put passwords, private keys, or secrets in messages, patches, command text, or commits.
+- Leave `ssh_accept_unknown_host_key` false unless the user accepts that risk.
+- Remote paths are on the SSH host — confirm remote `cwd` separately from local paths.
+
+## Safety
+
+- Treat `write`, patch delete/move, and `bash` as high-impact.
+- Scope work to the selected workspace and the user's request.
+- Tool success ≠ semantic correctness; verify after edits.
+- On timeout, inspect exit + partial output; do not silently retry unbounded.

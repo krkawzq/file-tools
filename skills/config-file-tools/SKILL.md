@@ -1,88 +1,95 @@
 ---
 name: config-file-tools
-description: Build, configure, diagnose, and verify the File Tools source checkout and MCP server. Trigger on a fresh clone, after Rust, Python, dependency, or launcher changes, when adding File Tools to an agent host, or when the MCP server fails to start, import its native extension, or expose all five tools.
+description: Build, configure, diagnose, and verify the File Tools source checkout and MCP server. Trigger on a fresh clone, after Rust/Python/dependency/launcher changes, when adding File Tools to an agent host, or when the MCP server fails to start, import its native extension, or expose all five tools.
 ---
 
 # Configure File Tools
 
-Set up File Tools from source and verify each layer from the Rust extension through MCP tool discovery. Inspect the target environment before changing dependencies or host configuration.
+Bring up File Tools from source and verify each layer: native extension → Python API → CLI → MCP discovery. Inspect the environment before changing dependencies or host config.
 
 ## Establish the target
 
-1. Locate the source root containing `pyproject.toml`, `Cargo.toml`, `src/file_tools/`, `.mcp.json`, and the host plugin manifests (`.codex-plugin/`, `.claude-plugin/`, `.cursor-plugin/`).
-2. Read those declarations and the relevant host configuration before acting; commands or entry points may have changed since this skill was written.
-3. Confirm whether the goal is source development, rebuilding after code changes, or repairing an agent host's MCP launch configuration.
-4. Use `uv` for Python environments and dependencies. Follow the environment's proxy and package-install rules before any networked `uv` or Cargo operation.
-5. Do not assume a native extension built on another operating system, architecture, or Python floor is reusable.
+1. Find the source root: `pyproject.toml`, `Cargo.toml`, `src/file_tools/`, `scripts/file_tools_mcp.py`, `.mcp.json`, and host manifests (`.codex-plugin/`, `.claude-plugin/`, `.grok-plugin/`, `.cursor-plugin/`).
+2. Read those declarations and the host's MCP / plugin config before changing anything.
+3. Clarify goal: source dev, rebuild after code change, or fix an agent host launcher.
+4. Use `uv` for Python env and deps. Apply the environment's proxy / package-install rules before networked `uv` or Cargo.
+5. Native extensions are not portable across OS, arch, or Python floors — rebuild when those change.
 
 ## Build from source
-
-From the source root, use the repository's declared development workflow:
 
 ```bash
 uv sync --extra dev
 uv run maturin develop --release --uv
 ```
 
-This resolves the declared Python dependencies, builds the pyo3 extension with the configured CPython 3.12+ stable ABI, places it where the source package can import it, and installs the package into the uv-managed environment. Prefer this workflow over manually copying a platform-specific library. Re-run `uv sync --extra dev` when dependency declarations or the lockfile change; rebuild with Maturin after Rust code or build metadata changes.
+Resolves Python deps, builds `file_tools._core` (pyo3, CPython **3.12+ abi3**), and installs into the uv env. Re-`uv sync --extra dev` when lock/deps change; rebuild Maturin after Rust or build-metadata changes.
 
-## Configure the MCP launcher
+## MCP launcher
 
-Treat `.mcp.json` and `scripts/file_tools_mcp.py` as the repository's shared
-launcher contract. Host-specific plugin manifests may wrap the same script
-with `${CLAUDE_PLUGIN_ROOT}` / `${GROK_PLUGIN_ROOT}` absolute-style paths.
+Canonical entry: `scripts/file_tools_mcp.py` (also `.mcp.json`).
 
-The checked-in launcher expects:
+| Expectation | Detail |
+|---|---|
+| Command | `python scripts/file_tools_mcp.py` over stdio (or the same script under a host plugin-root absolute path) |
+| Host wrappers | e.g. `${CLAUDE_PLUGIN_ROOT}` / `${GROK_PLUGIN_ROOT}` + `/scripts/file_tools_mcp.py` |
+| Import path | Launcher resolves repo/plugin root from its own path and puts `<root>/src` on `sys.path` / `PYTHONPATH` |
+| Runtime | Interpreter must provide `fastmcp` and load `file_tools._core` |
 
-- `python ./scripts/file_tools_mcp.py` (or the same script under a plugin-root
-  absolute path) over stdio;
-- the script to locate the source/plugin root from its own file path and add
-  `<root>/src` to `sys.path` / `PYTHONPATH` (process CWD must not be required);
-- the selected Python interpreter to provide `fastmcp` and load `file_tools._core`.
-
-Prefer the portable script over hand-written `cwd` / `PYTHONPATH=./src` entries.
-Use an absolute interpreter only for an explicitly machine-local configuration.
-Do not write credentials into MCP config. After changing host or plugin
-configuration, use that host's supported refresh or reinstall flow and start a
-new agent thread if it caches tools or skills.
+Use an absolute interpreter only for a machine-local pin. Never put credentials in MCP config. After host/plugin config changes, use that host's refresh/reinstall flow; start a new agent thread if tools/skills are cached.
 
 ## Verify in layers
 
-Run the smallest checks that prove the repaired layer, then expand verification after code or build changes:
+Smallest proof first, then expand:
 
 ```bash
-# Native extension and Python API
+# 1) Native + public Python API
 uv run python -c "from file_tools._core import count_lines; from file_tools import read, write, edit, apply_patch, bash; print('imports OK')"
 
-# CLI and MCP server construction
+# 2) CLI + server construction
 uv run file-tools --help
 uv run python -c "from file_tools.cli.mcp_server import create_mcp_server; create_mcp_server(); print('server construction OK')"
 
-# MCP stdio discovery via portable launcher
-uv run python scripts/file_tools_mcp.py &
-# or exercise the host's MCP list-tools against the same entry point
+# 3) MCP stdio entry (or host list-tools against the same entry)
+uv run python scripts/file_tools_mcp.py
 ```
 
-For a substantive source change, run the broader project checks as appropriate:
+After substantive source changes:
 
 ```bash
 uv run pytest
 cargo test --no-default-features
 ```
 
-Verify that MCP discovery returns exactly `read`, `write`, `edit`, `apply_patch`, and `bash`. A server process merely starting is not enough.
+**MCP discovery must list exactly:** `read`, `write`, `edit`, `apply_patch`, `bash`. Process start alone is insufficient.
+
+Optional docstring smoke (agent-facing copy lives on registered tools):
+
+```bash
+uv run python -c "
+from file_tools.mcp.register import register_tools
+class M:
+    def __init__(self): self.tools = {}
+    def tool(self, f): self.tools[f.__name__] = f; return f
+m = M(); register_tools(m)
+assert set(m.tools) == {'read','write','edit','apply_patch','bash'}
+assert all(m.tools[n].__doc__ for n in m.tools)
+print('tool docs OK')
+"
+```
 
 ## Diagnose by layer
 
-- If `file_tools._core` is missing or incompatible, confirm Python is CPython 3.12+, confirm platform and architecture, and rebuild with `uv run maturin develop --release --uv`.
-- If `fastmcp` is missing, run `uv sync --extra dev` and verify that the MCP launcher uses the same environment; do not install into an unrelated interpreter.
-- If the CLI works but the agent host cannot start the server, compare the host's effective `command`, `args`, `cwd`, environment, and executable lookup with `.mcp.json`.
-- If the server starts but tools are absent, run the focused stdio discovery test and inspect server-side registration rather than only testing imports.
-- If SSH operations fail after the server is healthy, treat authentication, host-key verification, port, and remote `cwd` as runtime client configuration, not as build failures.
+| Symptom | Check |
+|---|---|
+| `file_tools._core` missing / bad ABI | CPython 3.12+, OS/arch; `uv run maturin develop --release --uv` |
+| `fastmcp` missing | `uv sync --extra dev`; same env as the launcher |
+| CLI OK, host won't start server | Host `command` / `args` / env vs `.mcp.json` or plugin manifest |
+| Server up, tools missing | Stdio list-tools + registration path, not imports alone |
+| Tools OK, SSH fails | Auth, host keys, port, remote `cwd` — runtime client config, not build |
 
-## Preserve configuration integrity
+## Integrity
 
-- Keep `pyproject.toml` and `uv.lock` authoritative for Python dependencies; do not hand-edit `.venv`.
-- Keep Cargo features aligned with `[tool.maturin]`; do not invent alternate library names or copy paths without checking build output.
-- Do not weaken SSH host-key verification or embed passwords to make a smoke test pass.
-- Report which layer was verified and the exact remaining failure when setup cannot be completed.
+- `pyproject.toml` + `uv.lock` own Python deps; do not hand-edit `.venv`.
+- Keep Cargo features aligned with `[tool.maturin]`.
+- Do not weaken host-key checks or embed passwords for smoke tests.
+- Report verified layer and remaining failure when setup cannot finish.

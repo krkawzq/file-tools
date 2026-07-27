@@ -14,59 +14,6 @@ from file_tools.tools.apply_patch import (
 pytestmark = pytest.mark.anyio
 
 
-async def test_patch_accepts_heredoc_wrapper(tmp_path: Path) -> None:
-    patch_text = (
-        "<<EOF\n"
-        "*** Begin Patch\n"
-        "*** Add File: example.txt\n"
-        "+hello\n"
-        "*** End Patch\n"
-        "EOF\n"
-    )
-
-    result = await apply_patch(patch_text, client=LocalClient(cwd=tmp_path))
-
-    assert result.patch == (
-        "*** Begin Patch\n"
-        "*** Add File: example.txt\n"
-        "+hello\n"
-        "*** End Patch"
-    )
-    assert (tmp_path / "example.txt").read_text() == "hello\n"
-
-
-async def test_incomplete_heredoc_is_not_silently_truncated(tmp_path: Path) -> None:
-    patch_text = (
-        "<<EOF\n"
-        "*** Begin Patch\n"
-        "*** Add File: example.txt\n"
-        "+hello\n"
-        "*** End Patch\n"
-        "EOF_suffix\n"
-    )
-
-    with pytest.raises(PatchParseError):
-        await apply_patch(patch_text, client=LocalClient(cwd=tmp_path))
-
-
-async def test_control_marker_text_can_be_update_context(tmp_path: Path) -> None:
-    target = tmp_path / "example.txt"
-    target.write_text("*** End Patch\nold\n")
-
-    await apply_patch(
-        "*** Begin Patch\n"
-        "*** Update File: example.txt\n"
-        "@@\n"
-        " *** End Patch\n"
-        "-old\n"
-        "+new\n"
-        "*** End Patch\n",
-        client=LocalClient(cwd=tmp_path),
-    )
-
-    assert target.read_text() == "*** End Patch\nnew\n"
-
-
 async def test_bare_empty_update_line_is_rejected(tmp_path: Path) -> None:
     (tmp_path / "example.txt").write_text("content\n")
     with pytest.raises(PatchParseError, match="Invalid Update File line"):

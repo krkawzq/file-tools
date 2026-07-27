@@ -1,17 +1,24 @@
 """MCP tool implementations as plain functions (no FastMCP decorators).
 
-Common parameters:
+These functions are the callable surface used by :mod:`register` and by
+hosts that import the plain API. Agent-facing prose lives primarily on the
+``@mcp.tool`` wrappers in ``register.py``; keep parameter contracts aligned.
 
-- ``cwd`` (**required**)
-- ``connection``: ``"local"`` (default) or a named profile from
-  ``FILE_TOOLS_CONNECTIONS_FILE``. Credentials never appear in the MCP schema.
+Common parameters on every tool:
+
+- ``cwd`` (**required**) — workspace root on the selected client
+- ``client``: ``"local"`` (default) | ``"ssh"``
+- When ``client="ssh"``: require ``ssh_host``, positive ``ssh_port``,
+  ``ssh_user``; optional ``ssh_password`` / ``ssh_key`` / ``ssh_flags``
+- Unknown host keys are rejected unless
+  ``ssh_accept_unknown_host_key=True``
 """
 
 from __future__ import annotations
 
 from typing import Mapping
 
-from ..client import get_connection_client as _get_connection_client
+from ..client import get_cached_client as _get_cached_client
 from ..tools.apply_patch import apply_patch as _apply_patch
 from ..tools.bash import bash as _bash
 from ..tools.edit import edit as _edit
@@ -29,9 +36,26 @@ def _require_cwd(cwd: str) -> str:
 def _client(
     *,
     cwd: str,
-    connection: str = "local",
+    client: str = "local",
+    ssh_host: str = "",
+    ssh_port: int | None = None,
+    ssh_user: str = "",
+    ssh_password: str = "",
+    ssh_key: str = "",
+    ssh_flags: str = "",
+    ssh_accept_unknown_host_key: bool = False,
 ):
-    return _get_connection_client(connection, cwd=cwd)
+    return _get_cached_client(
+        client=client,
+        cwd=cwd,
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        ssh_user=ssh_user,
+        ssh_password=ssh_password,
+        ssh_key=ssh_key,
+        ssh_flags=ssh_flags,
+        accept_unknown_host_key=ssh_accept_unknown_host_key,
+    )
 
 
 async def read(
@@ -40,56 +64,62 @@ async def read(
     offset: int = 1,
     limit: int = 2000,
     show_line_numbers: bool = True,
-    connection: str = "local",
+    client: str = "local",
+    ssh_host: str = "",
+    ssh_port: int | None = None,
+    ssh_user: str = "",
+    ssh_password: str = "",
+    ssh_key: str = "",
+    ssh_flags: str = "",
+    ssh_accept_unknown_host_key: bool = False,
 ) -> str:
-    """Read a file from the local or remote filesystem.
+    """Read a window of UTF-8 text from a local or SSH filesystem.
 
-    Reads up to ``limit`` lines (default 2000) starting from ``offset``.
-    Results are returned with ``cat -n``-style line number prefixes when
-    ``show_line_numbers`` is True. For large files, use ``offset`` and
-    ``limit`` to bound the returned text and avoid overwhelming the context
-    window. Backends scan incrementally and retain only the requested window;
-    SSH transfers only the selected lines.
+    Reads up to ``limit`` lines (default 2000) from ``offset``. With
+    ``show_line_numbers=True`` (default), lines use ``cat -n`` prefixes and a
+    truncation notice may follow a limited window. Set line numbers false for
+    exact source text. Backends retain only the requested window; SSH transfers
+    selected lines only.
 
-    ``offset`` is 1-based: ``offset=1`` starts at the first line, and
-    ``offset=0`` is treated as line 1. A negative ``offset`` (e.g. ``-50``)
-    returns the last N lines of the file, ignoring ``limit`` for the tail
-    window.
-
-    The target must be a non-empty regular file. Missing files, directories,
-    empty files, and other non-regular paths raise an error. UTF-8 decoding
-    replaces invalid byte sequences.
+    ``offset`` is 1-based (``0`` → 1). Negative ``offset`` tails the last N
+    lines and ignores ``limit`` for window size. Target must be a non-empty
+    regular file; UTF-8 decoding replaces invalid bytes.
 
     Args:
-        target_file: Absolute path, or relative path resolved against
-            ``cwd``.
-        cwd: Working directory for resolving relative paths. Required.
-        offset: 1-based starting line number. 0 is treated as 1. Negative
-            values tail the last N lines. Defaults to 1.
-        limit: Maximum lines to return for a non-negative offset. Must be
-            > 0. Defaults to 2000.
-        show_line_numbers: Prefix each line with its line number (``cat -n``
-            format) and append a truncation notice when applicable. Set to
-            False to return exact source text. Defaults to True.
-        connection: ``"local"`` or a named profile loaded from
-            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+        target_file: Absolute, ``~``-relative, or ``cwd``-relative path.
+        cwd: Required working directory for relative resolution.
+        offset: 1-based start, or negative tail count. Defaults to 1.
+        limit: Max lines for non-negative offset (``> 0``, default 2000).
+        show_line_numbers: Prefix lines / truncation notice. Defaults True.
+        client: ``"local"`` (default) or ``"ssh"``.
+        ssh_host: Host / IP / ``~/.ssh/config`` alias when ``client="ssh"``.
+        ssh_port: Positive port when ``client="ssh"``. No implicit 22.
+        ssh_user: Username when ``client="ssh"``.
+        ssh_password: Optional password.
+        ssh_key: Optional private-key path.
+        ssh_flags: Supported OpenSSH flags: ``-X``, ``-Y``, ``-A``, ``-a``,
+            ``-C``.
+        ssh_accept_unknown_host_key: Trust missing host keys (insecure).
 
     Returns:
-        The file content as a string, with optional line number prefixes
-        and a truncation notice when the file exceeds the read window.
+        Selected text, optionally line-numbered.
 
     Raises:
-        ValueError: If ``cwd`` is empty, ``limit`` is not positive, or the
-            named connection profile is missing or invalid.
-        ReadFileNotFoundError: If the target file does not exist.
-        ReadIsDirectoryError: If the target path is a directory.
-        ReadEmptyFileError: If the file exists but contains no content.
-        ReadError: If the path is not a regular file or cannot be read.
+        ValueError: Empty ``cwd``, bad ``limit``/client, missing SSH settings.
+        ReadFileNotFoundError / ReadIsDirectoryError / ReadEmptyFileError /
+        ReadError: Path or read failures.
     """
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        connection=connection,
+        client=client,
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        ssh_user=ssh_user,
+        ssh_password=ssh_password,
+        ssh_key=ssh_key,
+        ssh_flags=ssh_flags,
+        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
     result = await _read(
         target_file,
@@ -105,42 +135,55 @@ async def write(
     file_path: str,
     content: str,
     cwd: str,
-    connection: str = "local",
+    client: str = "local",
+    ssh_host: str = "",
+    ssh_port: int | None = None,
+    ssh_user: str = "",
+    ssh_password: str = "",
+    ssh_key: str = "",
+    ssh_flags: str = "",
+    ssh_accept_unknown_host_key: bool = False,
 ) -> str:
-    """Create a new file or completely overwrite an existing file.
+    """Create a UTF-8 text file or replace it entirely.
 
-    Writes ``content`` to ``file_path``, creating missing parent directories
-    automatically. If the target already exists and is a regular file, it is
-    replaced in full — the previous contents are lost. The content is written
-    exactly as supplied: no trailing newline is added automatically, and an
-    empty string creates or truncates the file to zero bytes.
+    Creates missing parents. Overwrites existing regular files without backup.
+    Writes ``content`` exactly (no auto trailing newline; empty → zero bytes).
 
     Args:
-        file_path: Absolute path, or relative path resolved against
-            ``cwd``. Parent directories are created if missing.
-        content: The complete text to write. Written as-is; add a trailing
-            newline explicitly if one is desired.
-        cwd: Working directory for resolving relative paths. Required.
-        connection: ``"local"`` or a named profile loaded from
-            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+        file_path: Absolute, ``~``-relative, or ``cwd``-relative destination.
+        content: Complete file body (UTF-8).
+        cwd: Required working directory.
+        client: ``"local"`` (default) or ``"ssh"``.
+        ssh_host: Host / IP / alias when ``client="ssh"``.
+        ssh_port: Positive port when ``client="ssh"``. No implicit 22.
+        ssh_user: Username when ``client="ssh"``.
+        ssh_password: Optional password.
+        ssh_key: Optional private-key path.
+        ssh_flags: Supported OpenSSH flags: ``-X``, ``-Y``, ``-A``, ``-a``,
+            ``-C``.
+        ssh_accept_unknown_host_key: Trust missing host keys (insecure).
 
     Returns:
-        A summary string with the number of bytes written and the resolved
-        file path.
+        ``"wrote N bytes to <path>"``.
 
     Raises:
-        ValueError: If ``cwd`` is empty or the named connection profile is
-            missing or invalid.
-        WriteIsDirectoryError: If the destination is an existing directory.
-        WriteError: If encoding, directory creation, or writing fails.
+        ValueError: Empty ``cwd``, bad client, missing SSH settings.
+        WriteIsDirectoryError / WriteError: Destination or I/O failures.
 
     Warning:
-        Writing an existing file irreversibly replaces its contents.
+        Destructive for existing files.
     """
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        connection=connection,
+        client=client,
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        ssh_user=ssh_user,
+        ssh_password=ssh_password,
+        ssh_key=ssh_key,
+        ssh_flags=ssh_flags,
+        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
     result = await _write(file_path, content, client=c)
     return f"wrote {result.bytes_written} bytes to {result.file_path}"
@@ -153,88 +196,59 @@ async def edit(
     cwd: str,
     replace_all: bool = False,
     prepend: bool = False,
-    connection: str = "local",
+    client: str = "local",
+    ssh_host: str = "",
+    ssh_port: int | None = None,
+    ssh_user: str = "",
+    ssh_password: str = "",
+    ssh_key: str = "",
+    ssh_flags: str = "",
+    ssh_accept_unknown_host_key: bool = False,
 ) -> str:
-    """Perform exact string replacement in a file.
+    """Literal string edit, new-file create, or explicit prepend.
 
-    Searches for ``old_string`` in the target file and replaces it with
-    ``new_string``.
-
-    **Matching rules**:
-
-    1. First attempts an **exact substring match** against the file content.
-       ``old_string`` must match character-for-character, including
-       indentation (tabs/spaces), blank lines, and trailing whitespace.
-    2. If the exact match fails, retries with **per-line rstrip** tolerance:
-       trailing whitespace is ignored independently on each line of both
-       ``old_string`` and the file content. This makes matching robust
-       against invisible trailing spaces without requiring the caller to
-       manually strip them.
-    3. By default, ``old_string`` must match **exactly once**. Multiple
-       matches raise an error with context snippets to help disambiguate.
-       Set ``replace_all=True`` to replace every non-overlapping occurrence.
-
-    ``old_string`` must contain file text only. Line-number prefixes and
-    truncation notices are display metadata and do not match file content.
-
-    ``old_string=""`` means create a new file and its parent directories.
-    Creation fails if the target already exists; it never overwrites or
-    silently prepends. To prepend ``new_string`` to an existing file, also set
-    ``prepend=True``. Prepend fails if the target does not exist.
-    ``append`` is not provided by this tool. To append lines, use
-    ``apply_patch`` with an ``Update File`` hunk containing a bare ``@@`` and
-    only ``+`` lines; an add-only chunk without named context inserts at EOF.
-
-    Like ``write``, ``edit`` never adds a trailing newline automatically. A
-    normal replacement preserves the existing EOF newline unless the matched
-    or replacement text explicitly changes it.
+    Matching: exact substring first, then per-line trailing-whitespace
+    tolerance. Default unique match; ``replace_all=true`` for all occurrences.
+    ``old_string=""`` creates a new file (fails if exists) or, with
+    ``prepend=true``, prepends to an existing file. No append mode — use
+    ``apply_patch`` for EOF append. No auto trailing newline.
 
     Args:
-        file_path: Absolute path, or relative path resolved against
-            ``cwd``.
-        old_string: The literal text to find and replace. Must match exactly
-            (or match after per-line rstrip). An empty string means "create a
-            new file". Include full indentation and surrounding context for
-            uniqueness.
-        new_string: Literal replacement text. When ``old_string`` is empty,
-            this is the complete new-file content or, with ``prepend=True``,
-            the content to prepend. Otherwise, an empty string deletes the
-            matched text. It may equal a non-empty ``old_string``; such a call
-            still counts and rewrites the selected match.
-        cwd: Working directory for resolving relative paths. Required.
-        replace_all: If True, replace every non-overlapping occurrence of
-            ``old_string`` instead of requiring a single unique match.
-            Defaults to False.
-        prepend: If True, explicitly prepend ``new_string`` to an existing
-            file. Requires ``old_string=""``. Defaults to False.
-        connection: ``"local"`` or a named profile loaded from
-            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+        file_path: Absolute, ``~``-relative, or ``cwd``-relative path.
+        old_string: Match text, or ``""`` for create/prepend.
+        new_string: Replacement, new body, or prepend prefix.
+        cwd: Required working directory.
+        replace_all: Replace all non-overlapping matches. Defaults false.
+        prepend: Prepend mode; requires ``old_string=""``. Defaults false.
+        client: ``"local"`` (default) or ``"ssh"``.
+        ssh_host: Host / IP / alias when ``client="ssh"``.
+        ssh_port: Positive port when ``client="ssh"``. No implicit 22.
+        ssh_user: Username when ``client="ssh"``.
+        ssh_password: Optional password.
+        ssh_key: Optional private-key path.
+        ssh_flags: Supported OpenSSH flags: ``-X``, ``-Y``, ``-A``, ``-a``,
+            ``-C``.
+        ssh_accept_unknown_host_key: Trust missing host keys (insecure).
 
     Returns:
-        A summary string that explicitly reports ``created``, ``prepended``,
-        or ``replaced`` and the resolved path.
+        ``created`` / ``prepended to`` / ``replaced ... (N matches)`` summary.
 
     Raises:
-        ValueError: If ``cwd`` is empty, the named connection profile is
-            invalid, or if ``prepend=True`` is
-            combined with a non-empty ``old_string`` or ``replace_all=True``.
-        EditFileNotFoundError: If the target file does not exist and
-            ``old_string`` is non-empty, create-on-empty is disabled, or an
-            explicit prepend targets a missing file.
-        EditFileExistsError: If ``old_string=""`` targets an existing file
-            without ``prepend=True``.
-        EditStringNotFoundError: If ``old_string`` cannot be found anywhere
-            in the file.
-        EditAmbiguousMatchError: If ``old_string`` appears multiple times
-            and ``replace_all`` is False. The error message includes
-            context snippets around each match to help disambiguate.
-        EditError: If the path is a directory, not a regular file, or an
-            I/O error occurs.
+        ValueError: Bad cwd/client/SSH or invalid prepend combination.
+        EditFileNotFoundError / EditFileExistsError /
+        EditStringNotFoundError / EditAmbiguousMatchError / EditError.
     """
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        connection=connection,
+        client=client,
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        ssh_user=ssh_user,
+        ssh_password=ssh_password,
+        ssh_key=ssh_key,
+        ssh_flags=ssh_flags,
+        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
     result = await _edit(
         file_path,
@@ -254,126 +268,57 @@ async def edit(
 async def apply_patch(
     patch_text: str,
     cwd: str,
-    connection: str = "local",
+    client: str = "local",
+    ssh_host: str = "",
+    ssh_port: int | None = None,
+    ssh_user: str = "",
+    ssh_password: str = "",
+    ssh_key: str = "",
+    ssh_flags: str = "",
+    ssh_accept_unknown_host_key: bool = False,
 ) -> str:
-    """Apply a structured patch to one or more text files.
+    """Apply a structured multi-file patch (add / update / delete / move).
 
-    The patch may add, update, delete, or move files. Paths are absolute or
-    resolved against ``cwd`` on the selected client. The complete document is
-    parsed and preflighted against an in-memory filesystem view before writes
-    begin. Syntax errors, missing sources, conflicting destinations, and
-    unmatched update context prevent any filesystem mutation. Low-level
-    commit failures trigger a best-effort deterministic rollback. Every write
-    and delete also verifies the staged file version to reject stale patches.
-
-    Pass the complete patch as the string value of ``patch_text``. The string
-    must not contain Markdown fences or a second JSON wrapper. A surrounding
-    shell heredoc is accepted but unnecessary. The format is not a standard
-    unified diff: omit ``diff --git``, ``---``, ``+++``, and numeric
-    hunk-range headers.
-
-    Every control marker (``***`` and ``@@``) must start in column 1. Inside
-    ``Update File``, every content line also needs a one-character prefix:
-    space for unchanged context, ``-`` for removal, or ``+`` for addition. A
-    blank content line still needs one of these prefixes.
-    The Markdown fences around the examples below are documentation delimiters
-    only; pass only the lines between them as ``patch_text``.
-
-    Replacement with unchanged context:
-
-    ```text
-    *** Begin Patch
-    *** Update File: settings.txt
-    @@
-     [theme]
-    -color=blue
-    +color=green
-    *** End Patch
-    ```
-
-    The character before ``[theme]`` above is the required space prefix; it is
-    not indentation from the docstring.
-
-    Pure insertion after a unique line:
-
-    ```text
-    *** Begin Patch
-    *** Update File: app.py
-    @@ def main():
-    +    log_startup()
-    *** End Patch
-    ```
-
-    EOF-anchored replacement:
-
-    ```text
-    *** Begin Patch
-    *** Update File: app.py
-    @@
-    -raise SystemExit(main())
-    +raise SystemExit(run())
-    *** End of File
-    *** End Patch
-    ```
-
-    Move without changing contents:
-
-    ```text
-    *** Begin Patch
-    *** Update File: old_name.py
-    *** Move to: new_name.py
-    *** End Patch
-    ```
-
-    A patch may contain multiple file hunks. To add a nonexistent file, use
-    ``*** Add File: path`` followed only by ``+``-prefixed content lines. To
-    delete an existing regular file, use ``*** Delete File: path`` with no
-    content lines. ``*** Update File: path`` requires an existing regular file.
-
-    ``@@`` starts an update chunk; it never takes unified-diff line numbers.
-    ``@@ <context>`` seeks to a literal full line in the file, then starts the
-    chunk after that line. A chunk containing only ``+`` lines inserts there;
-    without named context, an add-only chunk inserts at EOF. Put
-    ``*** End of File`` after a chunk to require its old lines to match at EOF.
-    Copy match text from the file when possible. Matching tries exact lines
-    first, then tolerates trailing whitespace, full trim, and normalized
-    Unicode punctuation/spaces. Chunks run in order and later searches start
-    after earlier matches.
-
-    ``*** Move to: destination`` is valid only inside ``Update File`` and may
-    stand alone or accompany edits; the destination must not exist.
-    ``*** End Patch`` is the final control line. Added files and non-empty
-    content updates end with a newline; empty results remain zero bytes, while
-    move-only hunks preserve the source bytes.
+    Preflighted before writes; low-level commit failures get best-effort
+    deterministic rollback. Format is not unified diff: ``***`` / ``@@`` in
+    column 1; Update content lines need space/``-``/``+`` prefixes. Bare
+    ``@@`` with only ``+`` lines appends at EOF. See the MCP tool docstring on
+    the registered ``apply_patch`` wrapper for full examples.
 
     Args:
-        patch_text: Complete patch document including ``*** Begin Patch`` and
-            ``*** End Patch``.
-        cwd: Required working directory on the selected client. Relative patch
-            paths are resolved from here.
-        connection: ``"local"`` or a named profile loaded from
-            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+        patch_text: Full document including Begin/End Patch markers.
+        cwd: Required working directory; relative patch paths resolve here.
+        client: ``"local"`` (default) or ``"ssh"``.
+        ssh_host: Host / IP / alias when ``client="ssh"``.
+        ssh_port: Positive port when ``client="ssh"``. No implicit 22.
+        ssh_user: Username when ``client="ssh"``.
+        ssh_password: Optional password.
+        ssh_key: Optional private-key path.
+        ssh_flags: Supported OpenSSH flags: ``-X``, ``-Y``, ``-A``, ``-a``,
+            ``-C``.
+        ssh_accept_unknown_host_key: Trust missing host keys (insecure).
 
     Returns:
-        A summary of patch-relative paths grouped by operation, for example
-        ``"added=['new.txt'] modified=['app.py'] deleted=['old.txt']"``.
-        Moves are reported under ``modified`` using their destination path.
+        ``added=... modified=... deleted=...`` path summary.
 
     Raises:
-        ValueError: If ``cwd`` is empty or the named connection profile is
-            missing or invalid.
-        PatchParseError: If the patch grammar is invalid or incomplete.
-        PatchSeekError: If an update chunk cannot be located in its file.
-        PatchApplyError: If a path precondition fails or filesystem I/O fails.
+        ValueError: Empty ``cwd``, bad client, missing SSH settings.
+        PatchParseError / PatchSeekError / PatchApplyError.
 
     Warning:
-        Delete and move hunks remove source files after destination writes
-        complete.
+        Delete and move remove sources after destination writes.
     """
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        connection=connection,
+        client=client,
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        ssh_user=ssh_user,
+        ssh_password=ssh_password,
+        ssh_key=ssh_key,
+        ssh_flags=ssh_flags,
+        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
     result = await _apply_patch(patch_text, client=c)
     return f"added={result.added} modified={result.modified} deleted={result.deleted}"
@@ -389,86 +334,63 @@ async def bash(
     env: Mapping[str, str] | None = None,
     stdin: str | None = None,
     max_output_bytes: int = 1024 * 1024,
-    connection: str = "local",
+    client: str = "local",
+    ssh_host: str = "",
+    ssh_port: int | None = None,
+    ssh_user: str = "",
+    ssh_password: str = "",
+    ssh_key: str = "",
+    ssh_flags: str = "",
+    ssh_accept_unknown_host_key: bool = False,
 ) -> str:
-    """Execute a shell command and return its output.
+    """Run a bounded foreground command in an explicit workspace.
 
-    Runs ``command`` via the selected interpreter in the explicit ``cwd``.
-    By default this means ``cmd /c <command>`` for local Windows and
-    ``bash -c <command>`` for Linux, macOS, and SSH. The
-    command string is passed through **without content filtering** — pipes,
-    redirects, shell expansions, ``&&``/``||`` chaining, subshells, and
-    background operators (``&``) all work as they would in an interactive
-    shell.
-
-    The returned summary contains the exit code, working directory, wall-clock
-    duration, command, stdout, and stderr when present. Formatted output is
-    capped at 100,000 characters; when exceeded, both the beginning and end are
-    preserved with a truncation marker. Raw stream capture is limited to
-    ``max_output_bytes`` independently for stdout and stderr.
-
-    The timeout defaults to 120 seconds; zero disables it. A timed-out command
-    returns exit code 124, the ``timed_out`` marker, and captured partial output
-    instead of raising a timeout exception.
-
-    ``cwd`` is required on every call and applies only to that invocation.
-
-    Execution is foreground and non-interactive. No reusable terminal session
-    or PTY is created. Background operators are interpreted normally, but no
-    background process lifecycle is managed after the call returns.
-
-    Known interpreters receive their command-string flag automatically:
-    ``-c`` for POSIX shells, Python, Ruby, and Perl; ``-Command`` for
-    PowerShell; and ``/c`` for ``cmd``. ``flags`` contains only additional
-    interpreter options.
-
-    ``env`` overlays variables for the invocation without modifying the parent
-    environment. ``stdin`` supplies literal UTF-8 text and is then closed;
-    omitting it sends immediate EOF.
+    Default interpreter is ``cmd`` on local Windows, ``bash`` elsewhere
+    (including SSH). Full shell semantics; no sandbox or background manager.
+    Timeout default 120s (``0`` disables); timeout → exit 124 with partial
+    output. Output retained per stream up to ``max_output_bytes``.
 
     Args:
-        command: The shell command to execute. Non-empty string. Supports
-            multiline scripts, pipes, redirects, and shell operators.
-        cwd: Working directory for the command. Required.
-        timeout: Maximum seconds to wait. 0 disables the timeout. Negative
-            values are rejected. Defaults to 120.
-        description: A short human-readable label for the command (appears
-            in the output summary). Useful for documenting intent.
-        interpreter: Shell or runtime to use. Defaults to ``"auto"``, which
-            selects ``cmd`` on local Windows and ``bash`` elsewhere.
-        flags: Additional interpreter flags (e.g. ``"-euxo pipefail"``).
-            Parsing follows Windows rules for local Windows and POSIX rules
-            elsewhere. Do not include the command-string flag because it is
-            injected automatically.
-        env: Environment-variable overrides for this invocation. Keys and
-            values are converted to strings; names must use the portable
-            ``[A-Za-z_][A-Za-z0-9_]*`` form and values cannot contain NUL.
-        stdin: Text to pipe to the command's standard input.
-        max_output_bytes: Positive per-stream retained-output limit in bytes.
-            Defaults to 1 MiB (1048576) and may not exceed 16 MiB (16777216).
-        connection: ``"local"`` or a named profile loaded from
-            ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+        command: Non-empty command or script.
+        cwd: Required working directory.
+        timeout: Seconds; ``0`` disables. Defaults 120.
+        description: Optional report label.
+        interpreter: Executable or ``auto``.
+        flags: Extra interpreter flags (command-string flag injected).
+        env: Optional env overrides.
+        stdin: Optional UTF-8 stdin (then closed).
+        max_output_bytes: Per-stream retain limit (default 1 MiB, max 16 MiB).
+        client: ``"local"`` (default) or ``"ssh"``.
+        ssh_host: Host / IP / alias when ``client="ssh"``.
+        ssh_port: Positive port when ``client="ssh"``. No implicit 22.
+        ssh_user: Username when ``client="ssh"``.
+        ssh_password: Optional password.
+        ssh_key: Optional private-key path.
+        ssh_flags: Supported OpenSSH flags: ``-X``, ``-Y``, ``-A``, ``-a``,
+            ``-C``.
+        ssh_accept_unknown_host_key: Trust missing host keys (insecure).
 
     Returns:
-        A formatted string with exit code, cwd, duration, the original
-        command, stdout, and stderr (if any). Timed-out commands include
-        partial output. Exceeding the 100,000-character display cap
-        preserves both head and tail with a truncation marker.
+        Formatted report (exit, cwd, duration, command, stdout/stderr).
 
     Raises:
-        ValueError: If ``cwd`` is empty or the named connection profile is
-            missing or invalid.
-        BashError: If the command, timeout, interpreter, flags, environment,
-            or output limit is invalid, or execution cannot be started.
+        ValueError: Empty ``cwd``, bad client, missing SSH settings.
+        BashError: Invalid args or start failure.
 
     Warning:
-        No sandbox, approval gate, or command filtering is applied. Commands
-        run with the permissions of the selected client.
+        Arbitrary code execution with the selected client's permissions.
     """
     cwd = _require_cwd(cwd)
     c = _client(
         cwd=cwd,
-        connection=connection,
+        client=client,
+        ssh_host=ssh_host,
+        ssh_port=ssh_port,
+        ssh_user=ssh_user,
+        ssh_password=ssh_password,
+        ssh_key=ssh_key,
+        ssh_flags=ssh_flags,
+        ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
     result = await _bash(
         command,

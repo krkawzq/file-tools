@@ -1,13 +1,11 @@
 import os
-import signal
 import shutil
 import sys
-import threading
 import time
 from pathlib import Path
 
 import pytest
-from anyio import Event, create_task_group, sleep
+from anyio import sleep
 
 from file_tools import (
     ClientError,
@@ -16,8 +14,6 @@ from file_tools import (
     OperationTimeoutError,
     SshClient,
     TransferLimitError,
-    clear_client_cache,
-    get_connection_client,
     get_client,
     resolve_client,
 )
@@ -60,51 +56,6 @@ async def test_exec_command_timeout(tmp_path: Path) -> None:
     assert r.timed_out
     assert not r.ok
     assert r.exit_code == 124
-
-
-async def test_exec_command_keeps_event_loop_responsive(tmp_path: Path) -> None:
-    client = LocalClient(cwd=tmp_path)
-    finished = Event()
-    ticks = 0
-
-    async def ticker() -> None:
-        nonlocal ticks
-        while not finished.is_set():
-            ticks += 1
-            await sleep(0.02)
-
-    async with create_task_group() as task_group:
-        task_group.start_soon(ticker)
-        result = await client.exec_command(
-            "import time; time.sleep(0.25)",
-            interpreter=sys.executable,
-        )
-        finished.set()
-
-    assert result.ok
-    assert ticks >= 5
-
-
-async def test_native_command_releases_gil(tmp_path: Path) -> None:
-    from file_tools import _core
-
-    heartbeat = threading.Event()
-
-    def pulse() -> None:
-        time.sleep(0.05)
-        heartbeat.set()
-
-    thread = threading.Thread(target=pulse)
-    thread.start()
-    result = _core.LocalClient(cwd=tmp_path).exec_command(
-        "import time; time.sleep(0.25)",
-        interpreter=sys.executable,
-    )
-    observed_during_call = heartbeat.is_set()
-    thread.join()
-
-    assert result.ok
-    assert observed_during_call
 
 
 @pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan"), True])
@@ -162,23 +113,6 @@ async def test_exec_command_bounds_output_while_preserving_head_and_tail(
     assert "bytes omitted" in r.stdout
     assert r.stdout.startswith("0" * 64)
     assert r.stdout.endswith("0" * 64)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="uses POSIX process cleanup")
-async def test_exec_command_bounds_pipe_drain_when_descendant_keeps_it_open(
-    tmp_path: Path,
-) -> None:
-    start = time.monotonic()
-    r = await LocalClient(cwd=tmp_path).exec_command("sleep 10 & echo $!")
-    child_pid = int(r.stdout.strip())
-    try:
-        assert r.ok
-        assert time.monotonic() - start < 3
-    finally:
-        try:
-            os.kill(child_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
 
 
 async def test_exec_command_rejects_invalid_environment_name(tmp_path: Path) -> None:
@@ -245,7 +179,7 @@ async def test_get_client_creates_fresh_local_clients(tmp_path: Path) -> None:
     assert Path(a.cwd) == tmp_path.resolve()
 
 
-async def test_local_path_info_uses_one_async_operation(tmp_path: Path) -> None:
+async def test_local_path_info(tmp_path: Path) -> None:
     target = tmp_path / "file.txt"
     target.write_text("content")
     client = LocalClient(cwd=tmp_path)
@@ -291,22 +225,6 @@ async def test_local_full_read_respects_transfer_limit_but_window_is_bounded(
     )
     assert text == "first\n"
     assert (total, start, end, truncated) == (3, 1, 1, True)
-
-
-async def test_named_local_connection_is_cached(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = tmp_path / "connections.json"
-    config.write_text('{"connections":{"workspace":{"client":"local"}}}')
-    monkeypatch.setenv("FILE_TOOLS_CONNECTIONS_FILE", str(config))
-    clear_client_cache()
-
-    first = get_connection_client("workspace", cwd=str(tmp_path))
-    second = get_connection_client("workspace", cwd=str(tmp_path))
-
-    assert first is second
-    clear_client_cache()
 
 
 async def test_resolve_prefers_explicit_client(tmp_path: Path) -> None:

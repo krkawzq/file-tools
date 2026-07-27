@@ -58,7 +58,7 @@ def test_cli_write_allows_empty_stdin(tmp_path: Path) -> None:
     assert (tmp_path / "empty.txt").read_bytes() == b""
 
 
-def test_cli_edit_matches_mcp_parameters(tmp_path: Path) -> None:
+def test_cli_edit_replaces_text(tmp_path: Path) -> None:
     (tmp_path / "note.txt").write_text("before\n")
     stdout = io.StringIO()
 

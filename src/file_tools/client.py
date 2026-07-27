@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import builtins
 import math
 import os
-import json
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
-from pathlib import Path
 from threading import Lock
 from typing import Any, Literal, TypeVar
 
@@ -453,76 +450,6 @@ def get_cached_client(**settings: Any) -> Client:
         return client
 
 
-def _connections_path() -> Path:
-    configured = os.environ.get("FILE_TOOLS_CONNECTIONS_FILE", "").strip()
-    return Path(configured).expanduser() if configured else Path(
-        "~/.config/file-tools/connections.json"
-    ).expanduser()
-
-
-def connection_settings(connection: str, *, cwd: str = "") -> dict[str, Any]:
-    """Resolve a named connection without exposing credentials in tool schemas."""
-    name = (connection or "local").strip()
-    if name == "local":
-        return {"client": "local", "cwd": cwd}
-    path = _connections_path()
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except builtins.FileNotFoundError as exc:
-        raise ValueError(
-            f"connection profile {name!r} was requested but {path} does not exist"
-        ) from exc
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot load connection profiles from {path}: {exc}") from exc
-    profiles = document.get("connections", document)
-    if not isinstance(profiles, dict) or name not in profiles:
-        raise ValueError(f"unknown connection profile: {name!r}")
-    profile = profiles[name]
-    if not isinstance(profile, dict):
-        raise ValueError(f"connection profile {name!r} must be an object")
-    if (
-        os.name == "posix"
-        and profile.get("ssh_password")
-        and path.stat().st_mode & 0o077
-    ):
-        raise ValueError(
-            f"connection profile {path} contains a password and must not be "
-            "readable by group or other users"
-        )
-    allowed = {
-        "client",
-        "cwd",
-        "ssh_host",
-        "ssh_port",
-        "ssh_user",
-        "ssh_password",
-        "ssh_key",
-        "ssh_flags",
-        "connect_timeout",
-        "operation_timeout",
-        "max_transfer_bytes",
-        "max_concurrency",
-        "multiplexing",
-        "allow_password_prompt",
-        "accept_unknown_host_key",
-    }
-    unknown = set(profile) - allowed
-    if unknown:
-        raise ValueError(
-            f"connection profile {name!r} contains unsupported fields: {sorted(unknown)}"
-        )
-    settings = dict(profile)
-    settings.setdefault("client", "ssh")
-    if cwd:
-        settings["cwd"] = cwd
-    return settings
-
-
-def get_connection_client(connection: str = "local", *, cwd: str = "") -> Client:
-    """Resolve and cache a named local or SSH connection."""
-    return get_cached_client(**connection_settings(connection, cwd=cwd))
-
-
 __all__ = [
     "Client",
     "ClientError",
@@ -539,8 +466,6 @@ __all__ = [
     "SshClient",
     "get_client",
     "get_cached_client",
-    "get_connection_client",
-    "connection_settings",
     "clear_client_cache",
     "resolve_client",
 ]

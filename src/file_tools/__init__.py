@@ -14,10 +14,8 @@ from .client import (
     SshClient,
     TransferLimitError,
     clear_client_cache,
-    connection_settings,
     get_cached_client,
     get_client,
-    get_connection_client,
     resolve_client,
 )
 from .tools import apply_patch, bash, edit, read, write
@@ -36,10 +34,8 @@ __all__ = [
     "SshClient",
     "TransferLimitError",
     "clear_client_cache",
-    "connection_settings",
     "get_cached_client",
     "get_client",
-    "get_connection_client",
     "resolve_client",
     "read",
     "write",

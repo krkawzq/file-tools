@@ -25,56 +25,73 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         offset: int = 1,
         limit: int = 2000,
         show_line_numbers: bool = True,
-        connection: str = "local",
+        client: str = "local",
+        ssh_host: str = "",
+        ssh_port: int | None = None,
+        ssh_user: str = "",
+        ssh_password: str = "",
+        ssh_key: str = "",
+        ssh_flags: str = "",
+        ssh_accept_unknown_host_key: bool = False,
     ) -> str:
-        """Read a UTF-8 text file from a local or SSH-backed filesystem.
+        """Read a window of UTF-8 text from a local or SSH filesystem.
 
-        Relative paths are resolved against ``cwd`` on the selected client.
-        The target must exist and must be a non-empty regular file; directories
-        and other non-regular paths are rejected. UTF-8 decoding replaces
-        invalid byte sequences.
+        Use for inspecting source, configs, logs, and other text before edits.
+        Always pass an explicit ``cwd``; relative paths resolve against that
+        workspace on the selected client. Prefer small windows over whole-file
+        dumps so the context stays bounded.
 
-        Line selection follows these rules:
+        The target must be a non-empty regular file. Missing paths,
+        directories, empty files, and other non-regular paths raise. UTF-8
+        decoding replaces invalid byte sequences.
 
-        - ``offset >= 1`` starts at that 1-based line number.
-        - ``offset == 0`` is accepted as an alias for line 1.
+        **Line selection**
+
+        - ``offset >= 1`` starts at that 1-based line (default ``1``).
+        - ``offset == 0`` is treated as line 1.
         - ``offset < 0`` returns the last ``abs(offset)`` lines and ignores
-          ``limit`` when choosing the window.
-        - A positive ``offset`` beyond end-of-file returns an empty string.
-        - ``limit`` must be greater than zero. It caps the number of returned
-          lines only when ``offset`` is non-negative.
+          ``limit`` for the window size.
+        - A positive ``offset`` past EOF returns an empty string.
+        - ``limit`` must be ``> 0`` (default ``2000``) and only caps
+          non-negative-offset reads.
 
-        When ``show_line_numbers`` is true, each returned line is prefixed in
-        ``cat -n`` style. If a positive-offset read is truncated by ``limit``,
-        the result also ends with a truncation notice. Continue with a larger
-        positive ``offset`` to inspect the next window. Set line numbers to
-        false to return exact file text because the prefixes and truncation
-        notice are display metadata, not file content.
+        When ``show_line_numbers`` is true (default), lines use ``cat -n``
+        prefixes and a truncation notice may be appended if ``limit`` cut the
+        window short. Continue from the next 1-based line after ``end`` when
+        truncated. Set ``show_line_numbers=false`` when you need exact file
+        text for a later ``edit`` or comparison — prefixes and notices are
+        display metadata, not file content.
 
         Args:
-            target_file: File to read. May be absolute, ``~``-relative, or
-                relative to ``cwd``.
-            cwd: Required working directory on the selected client. Relative
-                file paths are resolved from here; never rely on an implicit
-                process working directory.
-            offset: 1-based starting line, or a negative tail count. Defaults
-                to 1.
-            limit: Maximum lines for a non-negative offset. Must be positive;
+            target_file: File to read. Absolute, ``~``-relative, or relative
+                to ``cwd``.
+            cwd: Required working directory on the selected client.
+            offset: 1-based start line, or negative tail count. Defaults to 1.
+            limit: Max lines for a non-negative offset. Must be positive;
                 defaults to 2000.
-            show_line_numbers: Add line-number prefixes and a truncation notice
+            show_line_numbers: Prefix lines and append a truncation notice
                 when applicable. Defaults to true.
-            connection: ``"local"`` or a named profile loaded from
-                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+            client: ``"local"`` (default) or ``"ssh"``. SSH parameters are
+                ignored for local.
+            ssh_host: Hostname, IP, or ``Host`` alias from ``~/.ssh/config``.
+                Required when ``client="ssh"``.
+            ssh_port: Positive SSH port when ``client="ssh"``. No implicit 22.
+            ssh_user: SSH username when ``client="ssh"``.
+            ssh_password: Optional explicit password (prefer keys/agent).
+            ssh_key: Optional private-key path on the host filesystem.
+            ssh_flags: Space-separated supported OpenSSH flags: ``-X``,
+                ``-Y``, ``-A``, ``-a``, ``-C``. Others are ignored.
+            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
+                missing from ``known_hosts``.
 
         Returns:
-            The selected text, optionally line-numbered. UTF-8 decoding errors
-            are replaced rather than raised.
+            The selected text, optionally line-numbered, with a truncation
+            notice when a positive-offset window is cut short by ``limit``.
 
         Raises:
-            ValueError: If ``cwd`` is empty, ``limit`` is not positive, or the
-                named connection profile is missing or invalid.
-            ReadError: If the path is missing, empty, not a regular file, or
-                cannot be read.
+            ValueError: Empty ``cwd``, non-positive ``limit``, invalid client,
+                or missing SSH settings.
+            ReadError: Missing, empty, non-regular, or unreadable path.
         """
         return await impl.read(
             target_file,
@@ -82,7 +99,14 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             offset=offset,
             limit=limit,
             show_line_numbers=show_line_numbers,
-            connection=connection,
+            client=client,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            ssh_password=ssh_password,
+            ssh_key=ssh_key,
+            ssh_flags=ssh_flags,
+            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
         )
 
     @mcp.tool
@@ -90,50 +114,69 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         file_path: str,
         content: str,
         cwd: str,
-        connection: str = "local",
+        client: str = "local",
+        ssh_host: str = "",
+        ssh_port: int | None = None,
+        ssh_user: str = "",
+        ssh_password: str = "",
+        ssh_key: str = "",
+        ssh_flags: str = "",
+        ssh_accept_unknown_host_key: bool = False,
     ) -> str:
-        """Create or completely overwrite a UTF-8 text file.
+        """Create a UTF-8 text file or replace it entirely.
 
-        Missing parent directories are created automatically. If ``file_path``
-        already names a regular file, all existing contents are replaced
-        without a read-before-write check or backup.
+        Use only when the intended result is the full new file body. Prefer
+        ``edit`` for localized changes and ``apply_patch`` for multi-file or
+        structured updates. Always pass explicit ``cwd``.
 
-        The ``content`` argument is written exactly as supplied: no trailing
-        newline is added and an empty string creates or truncates the target to
-        a zero-byte file. The target cannot be an existing directory. This is
-        a text tool rather than a binary-file API; ``content`` is encoded as
-        UTF-8 before writing. Read an existing file first whenever any of its
-        current contents must be preserved.
+        Missing parents are created. An existing regular file is overwritten
+        with no backup and no merge. ``content`` is written exactly as given:
+        no trailing newline is added; an empty string yields a zero-byte file.
+        Existing directories cannot be targets. This is a text API (UTF-8
+        encode on write), not a binary blob store.
 
         Args:
-            file_path: Destination file. May be absolute, ``~``-relative, or
-                relative to ``cwd``.
-            content: Complete replacement contents encoded as UTF-8.
-            cwd: Required working directory on the selected client. Relative
-                file paths are resolved from here.
-            connection: ``"local"`` or a named profile loaded from
-                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+            file_path: Destination. Absolute, ``~``-relative, or relative to
+                ``cwd``.
+            content: Complete file body to write (UTF-8).
+            cwd: Required working directory on the selected client.
+            client: ``"local"`` (default) or ``"ssh"``. SSH parameters are
+                ignored for local.
+            ssh_host: Hostname, IP, or ``Host`` alias from ``~/.ssh/config``.
+                Required when ``client="ssh"``.
+            ssh_port: Positive SSH port when ``client="ssh"``. No implicit 22.
+            ssh_user: SSH username when ``client="ssh"``.
+            ssh_password: Optional explicit password (prefer keys/agent).
+            ssh_key: Optional private-key path on the host filesystem.
+            ssh_flags: Space-separated supported OpenSSH flags: ``-X``,
+                ``-Y``, ``-A``, ``-a``, ``-C``. Others are ignored.
+            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
+                missing from ``known_hosts``.
 
         Returns:
-            A confirmation string containing the number of UTF-8 bytes written
-            and the resolved destination path, for example
+            Confirmation with byte count and resolved path, e.g.
             ``"wrote 6 bytes to /workspace/note.txt"``.
 
         Raises:
-            ValueError: If ``cwd`` is empty or the named connection profile is
-                missing or invalid.
-            WriteError: If the destination is a directory or the file cannot be
-                encoded, created, or overwritten.
+            ValueError: Empty ``cwd``, invalid client, or missing SSH settings.
+            WriteError: Destination is a directory, or encode/create/write
+                fails.
 
         Warning:
-            This operation is destructive for an existing file and does not
-            preserve its previous contents.
+            Destructive for existing files: previous contents are discarded.
         """
         return await impl.write(
             file_path,
             content,
             cwd,
-            connection=connection,
+            client=client,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            ssh_password=ssh_password,
+            ssh_key=ssh_key,
+            ssh_flags=ssh_flags,
+            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
         )
 
     @mcp.tool
@@ -144,71 +187,82 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         cwd: str,
         replace_all: bool = False,
         prepend: bool = False,
-        connection: str = "local",
+        client: str = "local",
+        ssh_host: str = "",
+        ssh_port: int | None = None,
+        ssh_user: str = "",
+        ssh_password: str = "",
+        ssh_key: str = "",
+        ssh_flags: str = "",
+        ssh_accept_unknown_host_key: bool = False,
     ) -> str:
-        """Replace a specific string in a local or remote UTF-8 text file.
+        """Literal string edit, new-file create, or explicit prepend.
 
-        Matching first searches for exact substring occurrences. If there are
-        none, it retries with trailing whitespace ignored independently on each
-        line.
+        Prefer this for a single-file, uniqueness-checked change. Use
+        ``apply_patch`` for multi-file, move/delete, or EOF append. Always
+        pass explicit ``cwd``. Read with ``show_line_numbers=false`` before
+        matching so prefixes are not copied into ``old_string``.
 
-        By default, ``old_string`` must match exactly once. No match raises an
-        error; multiple matches raise an ambiguity error instead of guessing.
-        Include more surrounding text to make the match unique, or set
-        ``replace_all=true`` only when every occurrence should change.
-        ``old_string`` must contain file text only; line-number prefixes and
-        truncation notices are display metadata and will not match.
+        **Modes**
 
-        ``old_string=""`` means create a new file. Missing parent directories
-        are created as needed, but an existing target raises an error instead
-        of being overwritten or silently prepended. Prepending is explicit:
-        also set ``prepend=true``; the target must already exist.
-        ``append`` is not provided by this tool. To append lines, use
-        ``apply_patch`` with an ``Update File`` hunk containing a bare ``@@``
-        and only ``+`` lines; an add-only chunk without named context inserts
-        at EOF.
+        - **Replace** (default): ``old_string`` must match file text. Exact
+          substring first; if none, retry with per-line trailing-whitespace
+          tolerance. Default requires exactly one match; zero matches error,
+          multiple matches error unless ``replace_all=true``.
+        - **Create**: ``old_string=""`` creates a new file (parents as
+          needed). Existing paths raise — never silent overwrite or prepend.
+        - **Prepend**: ``old_string=""`` and ``prepend=true`` insert
+          ``new_string`` at the start of an existing file.
 
-        Like ``write``, ``edit`` never adds a trailing newline automatically.
-        A normal replacement preserves the existing EOF newline unless the
-        matched or replacement text explicitly changes it.
+        There is no append mode. To append at EOF, use ``apply_patch`` with an
+        ``Update File`` hunk that has a bare ``@@`` and only ``+`` lines.
+
+        ``old_string`` / ``new_string`` are literal file text (indentation and
+        newlines included). Empty ``new_string`` on a replace deletes the
+        match. No trailing newline is auto-added; a normal replace keeps the
+        file's existing EOF newline state unless the match or replacement
+        changes it.
 
         Args:
-            file_path: File to edit. May be absolute, ``~``-relative, or
-                relative to ``cwd``.
-            old_string: Literal text to replace. Preserve indentation and line
-                breaks. An empty string means create a new file, not a normal
-                zero-width replacement.
-            new_string: Literal replacement text. When ``old_string`` is empty,
-                this is the complete new-file content or, with
-                ``prepend=true``, the content to prepend. Otherwise, an empty
-                string deletes the matched text.
-            cwd: Required working directory on the selected client. Relative
-                file paths are resolved from here.
-            replace_all: Replace every non-overlapping match. When false, the
-                match must be unique. Defaults to false.
-            prepend: Explicitly prepend ``new_string`` to an existing file.
-                Requires ``old_string=""``. Defaults to false.
-            connection: ``"local"`` or a named profile loaded from
-                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+            file_path: File to edit. Absolute, ``~``-relative, or relative to
+                ``cwd``.
+            old_string: Literal match text, or ``""`` for create/prepend.
+            new_string: Replacement, new-file body, or prepend prefix. Empty
+                on replace deletes the matched span.
+            cwd: Required working directory on the selected client.
+            replace_all: Replace every non-overlapping match. Defaults false
+                (unique match required).
+            prepend: Prepend ``new_string`` to an existing file; requires
+                ``old_string=""``. Defaults false.
+            client: ``"local"`` (default) or ``"ssh"``. SSH parameters are
+                ignored for local.
+            ssh_host: Hostname, IP, or ``Host`` alias from ``~/.ssh/config``.
+                Required when ``client="ssh"``.
+            ssh_port: Positive SSH port when ``client="ssh"``. No implicit 22.
+            ssh_user: SSH username when ``client="ssh"``.
+            ssh_password: Optional explicit password (prefer keys/agent).
+            ssh_key: Optional private-key path on the host filesystem.
+            ssh_flags: Space-separated supported OpenSSH flags: ``-X``,
+                ``-Y``, ``-A``, ``-a``, ``-C``. Others are ignored.
+            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
+                missing from ``known_hosts``.
 
         Returns:
-            A confirmation that explicitly distinguishes the operation, for
-            example ``"created /workspace/new.py"``,
+            Operation-tagged confirmation, e.g.
+            ``"created /workspace/new.py"``,
             ``"prepended to /workspace/app.py"``, or
             ``"replaced /workspace/app.py (1 matches)"``.
 
         Raises:
-            ValueError: If ``cwd`` is empty, the named connection profile is
-                invalid, or if ``prepend=true`` is
-                combined with a non-empty ``old_string`` or
+            ValueError: Empty ``cwd``, invalid client/SSH settings, or
+                ``prepend=true`` with non-empty ``old_string`` or
                 ``replace_all=true``.
-            EditFileNotFoundError: If the file is missing and ``old_string`` is
-                non-empty, or an explicit prepend targets a missing file.
-            EditFileExistsError: If create-on-empty targets an existing file.
-            EditStringNotFoundError: If ``old_string`` does not match.
-            EditAmbiguousMatchError: If it matches more than once while
+            EditFileNotFoundError: Missing file for replace or prepend.
+            EditFileExistsError: Create-on-empty hits an existing path.
+            EditStringNotFoundError: No match for ``old_string``.
+            EditAmbiguousMatchError: Multiple matches while
                 ``replace_all`` is false.
-            EditError: If the path is not a regular file or I/O fails.
+            EditError: Not a regular file or I/O failure.
         """
         return await impl.edit(
             file_path,
@@ -217,39 +271,52 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             cwd,
             replace_all=replace_all,
             prepend=prepend,
-            connection=connection,
+            client=client,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            ssh_password=ssh_password,
+            ssh_key=ssh_key,
+            ssh_flags=ssh_flags,
+            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
         )
 
     @mcp.tool
     async def apply_patch(
         patch_text: str,
         cwd: str,
-        connection: str = "local",
+        client: str = "local",
+        ssh_host: str = "",
+        ssh_port: int | None = None,
+        ssh_user: str = "",
+        ssh_password: str = "",
+        ssh_key: str = "",
+        ssh_flags: str = "",
+        ssh_accept_unknown_host_key: bool = False,
     ) -> str:
-        """Apply a structured patch to one or more text files.
+        """Apply a structured multi-file patch (add / update / delete / move).
 
-        The patch may add, update, delete, or move files. Paths are absolute or
-        resolved against ``cwd`` on the selected client. The complete document
-        is parsed and preflighted against an in-memory filesystem view before
-        writes begin. Syntax errors, missing sources, conflicting destinations,
-        and unmatched update context prevent any filesystem mutation. Low-level
-        Commit failures trigger a best-effort deterministic rollback. Every
-        write and delete also verifies the staged file version.
+        Use for coordinated changes across one or more paths, moves, deletes,
+        or EOF appends. Prefer ``edit`` for a single unique literal replace.
+        Always pass explicit ``cwd``; patch paths resolve against it.
 
-        ``patch_text`` contains the complete patch document directly, without
-        Markdown fences or a serialized JSON wrapper. Content lines must not
-        have extra indentation. A surrounding shell heredoc is accepted but
-        unnecessary. The format is not a standard unified diff: omit
-        ``diff --git``, ``---``, ``+++``, and numeric hunk-range headers.
+        The full document is parsed and preflighted against an in-memory view
+        before any write. Grammar errors, missing sources, conflicting
+        destinations, unmatched context, and stale versions block all mutation.
+        Low-level commit failures attempt best-effort deterministic rollback.
 
-        Every control marker (``***`` and ``@@``) must start in column 1.
-        Inside ``Update File``, every content line also needs a one-character
-        prefix: space for unchanged context, ``-`` for removal, or ``+`` for
-        addition. A blank content line still needs one of these prefixes.
-        The Markdown fences around the examples below are documentation
-        delimiters only; pass only the lines between them as ``patch_text``.
+        **Format (not unified diff)**
 
-        Replacement with unchanged context:
+        Pass the patch body only — no Markdown fences, no ``diff --git`` /
+        ``---`` / ``+++`` / numeric hunk headers. Every ``***`` and ``@@``
+        marker starts in column 1. Inside ``Update File``, each content line
+        needs a one-character prefix: space (context), ``-`` (remove), or
+        ``+`` (add); blank content lines still need a prefix.
+
+        The fenced blocks below are documentation only; pass the inner lines as
+        ``patch_text``.
+
+        Replace with context:
 
         ```text
         *** Begin Patch
@@ -261,10 +328,9 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         *** End Patch
         ```
 
-        The character before ``[theme]`` above is the required space prefix;
-        it is not indentation from the code block.
+        (The space before ``[theme]`` is the required context prefix.)
 
-        Pure insertion after a unique line:
+        Insert after a unique line:
 
         ```text
         *** Begin Patch
@@ -274,7 +340,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         *** End Patch
         ```
 
-        EOF-anchored replacement:
+        EOF-anchored replace:
 
         ```text
         *** Begin Patch
@@ -286,7 +352,17 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         *** End Patch
         ```
 
-        Move without changing contents:
+        Append at EOF (bare ``@@``, only ``+`` lines):
+
+        ```text
+        *** Begin Patch
+        *** Update File: notes.txt
+        @@
+        +trailing line
+        *** End Patch
+        ```
+
+        Move only:
 
         ```text
         *** Begin Patch
@@ -295,59 +371,68 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         *** End Patch
         ```
 
-        A patch may contain multiple file hunks. To add a nonexistent file, use
-        ``*** Add File: path`` followed only by ``+``-prefixed content lines.
-        To delete an existing regular file, use ``*** Delete File: path`` with
-        no content lines. ``*** Update File: path`` requires an existing
-        regular file.
+        **Hunk rules**
 
-        ``@@`` starts an update chunk; it never takes unified-diff line
-        numbers. ``@@ <context>`` seeks to a literal full line in the file,
-        then starts the chunk after that line. A chunk containing only ``+``
-        lines inserts there; without named context, an add-only chunk inserts
-        at EOF. Put ``*** End of File`` after a chunk to require its old lines
-        to match at EOF. Copy match text from the file when possible. Matching
-        tries exact lines first, then tolerates trailing whitespace, full trim,
-        and normalized Unicode punctuation/spaces. Chunks run in order and
-        later searches start after earlier matches.
-
-        ``*** Move to: destination`` is valid only inside ``Update File`` and
-        may stand alone or accompany edits; the destination must not exist.
-        ``*** End Patch`` is the final control line. Added files and non-empty
-        content updates end with a newline; empty results remain zero bytes,
-        while move-only hunks preserve the source bytes.
+        - ``*** Add File: path`` — target must not exist; body lines are
+          ``+``-prefixed only.
+        - ``*** Delete File: path`` — existing regular file; no content lines.
+        - ``*** Update File: path`` — existing regular file.
+        - ``@@`` starts a chunk (no line numbers). ``@@ <line>`` seeks that
+          full line and applies after it; add-only without named context
+          inserts at EOF.
+        - ``*** End of File`` after a chunk requires the old lines to match at
+          EOF.
+        - Matching: exact lines first, then trailing-whitespace / trim /
+          Unicode-normalized fallbacks. Chunks apply in order; later searches
+          start after earlier matches.
+        - ``*** Move to: dest`` only inside Update; destination must not exist.
+        - Added / non-empty updates end with a newline; empty stays zero bytes;
+          move-only preserves source bytes.
 
         Args:
-            patch_text: Full patch document, including ``*** Begin Patch`` and
-                ``*** End Patch``. Supply it directly as text, without Markdown
-                fences. A surrounding ``<<EOF`` heredoc wrapper is accepted but
-                unnecessary.
-            cwd: Required working directory on the selected client. Relative
-                patch paths are resolved from here.
-            connection: ``"local"`` or a named profile loaded from
-                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+            patch_text: Full document from ``*** Begin Patch`` through
+                ``*** End Patch``.
+            cwd: Required working directory on the selected client.
+            client: ``"local"`` (default) or ``"ssh"``. SSH parameters are
+                ignored for local.
+            ssh_host: Hostname, IP, or ``Host`` alias from ``~/.ssh/config``.
+                Required when ``client="ssh"``.
+            ssh_port: Positive SSH port when ``client="ssh"``. No implicit 22.
+            ssh_user: SSH username when ``client="ssh"``.
+            ssh_password: Optional explicit password (prefer keys/agent).
+            ssh_key: Optional private-key path on the host filesystem.
+            ssh_flags: Space-separated supported OpenSSH flags: ``-X``,
+                ``-Y``, ``-A``, ``-a``, ``-C``. Others are ignored.
+            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
+                missing from ``known_hosts``.
 
         Returns:
-            A summary of patch-relative paths grouped by operation, for example
+            Path summary by operation, e.g.
             ``"added=['new.txt'] modified=['app.py'] deleted=['old.txt']"``.
-            A moved file is reported under ``modified`` using its destination.
+            Moves appear under ``modified`` at the destination path.
 
         Raises:
-            ValueError: If ``cwd`` is empty or the named connection profile is
-                missing or invalid.
-            PatchParseError: If the patch grammar is invalid or incomplete.
-            PatchSeekError: If an update chunk cannot be located in its file.
-            PatchApplyError: If a required source is missing, a destination
-                already exists, a path is not a regular file, or I/O fails.
+            ValueError: Empty ``cwd``, invalid client, or missing SSH settings.
+            PatchParseError: Invalid or incomplete patch grammar.
+            PatchSeekError: An update chunk cannot be located.
+            PatchApplyError: Missing source, existing destination, non-regular
+                path, or I/O failure.
 
         Warning:
-            Delete and move hunks remove source files after destination writes
-            complete.
+            Delete and move remove source paths after destination writes
+            succeed.
         """
         return await impl.apply_patch(
             patch_text,
             cwd,
-            connection=connection,
+            client=client,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            ssh_password=ssh_password,
+            ssh_key=ssh_key,
+            ssh_flags=ssh_flags,
+            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
         )
 
     @mcp.tool
@@ -361,75 +446,77 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         env: dict[str, str] | None = None,
         stdin: str | None = None,
         max_output_bytes: int = 1024 * 1024,
-        connection: str = "local",
+        client: str = "local",
+        ssh_host: str = "",
+        ssh_port: int | None = None,
+        ssh_user: str = "",
+        ssh_password: str = "",
+        ssh_key: str = "",
+        ssh_flags: str = "",
+        ssh_accept_unknown_host_key: bool = False,
     ) -> str:
-        """Execute a foreground command through a selected shell.
+        """Run a bounded foreground command in an explicit workspace.
 
-        By default, ``interpreter="auto"`` selects ``cmd`` for local Windows
-        and ``bash`` for local Linux/macOS or SSH, then executes the supplied
-        string in ``cwd``.
+        Use for diagnostics, builds, tests, and other shell work that is not a
+        structured file edit. Prefer ``read`` / ``edit`` / ``apply_patch`` /
+        ``write`` for file mutations. Always pass explicit ``cwd``.
 
-        The command string is passed to the interpreter without content
-        filtering. Shell syntax such as pipes, redirects, variable expansion,
-        command substitution, ``&&``, and background operators therefore has
-        its normal meaning. No sandbox, approval gate, command filtering,
-        background-task manager, or automatic safety policy is applied.
-        Execution is foreground and non-interactive: the call returns after the
-        process exits or times out, and no reusable terminal session or PTY is
-        exposed for later input.
+        Default ``interpreter="auto"`` selects ``cmd`` on local Windows and
+        ``bash`` on local Unix or SSH. The command string is handed to the
+        interpreter with full shell semantics (pipes, redirects, expansions,
+        ``&&``, ``&``, …). There is no sandbox, approval gate, content filter,
+        reusable shell, PTY, or background-task manager. The call returns when
+        the process exits or times out.
 
-        Known interpreters automatically receive their command-string option:
-        ``-c`` for POSIX shells/Python/Ruby/Perl, ``-Command`` for PowerShell,
-        and ``/c`` for ``cmd``. Supply only additional interpreter options in
-        ``flags``; for example, ``interpreter="bash", flags="-l"`` becomes a
-        login-shell invocation with the required ``-c`` injected.
+        Known interpreters get their command-string flag injected: ``-c``
+        (POSIX shells, Python, Ruby, Perl), ``-Command`` (PowerShell),
+        ``/c`` (``cmd``). Put only extra options in ``flags`` (e.g.
+        ``interpreter="bash", flags="-l"``).
 
         Args:
-            command: Non-empty shell script or command string. It may contain
-                multiple lines and shell operators.
-            cwd: Required working directory on the selected client. The command
-                runs here; it is never inferred implicitly.
-            timeout: Maximum foreground execution time in seconds. Defaults to
-                120. ``0`` disables the timeout. Negative, NaN, and infinite
-                values are rejected. A timeout returns a normal result with
-                exit code 124 and ``timed_out`` in its header.
-            description: Optional short purpose included as ``desc: ...`` in
-                the result header. It does not affect execution.
-            interpreter: Executable name or path used to evaluate ``command``.
-                Defaults to ``auto`` (``cmd`` on local Windows, ``bash``
-                elsewhere).
-            flags: Additional interpreter flags, parsed with Windows rules for
-                local Windows and POSIX rules elsewhere. Usually omit the
-                command-string flag because it is injected automatically.
-            env: Optional environment-variable overrides for the child process.
-                Keys and values are converted to strings. Names must match
-                ``[A-Za-z_][A-Za-z0-9_]*`` and values cannot contain NUL;
-                remote values are shell-quoted rather than interpolated.
-            stdin: Optional UTF-8 text sent to the command before stdin is
-                closed. Omit it for an immediate EOF.
-            max_output_bytes: Maximum bytes retained independently for stdout
-                and stderr while excess bytes continue to be drained. Must be a
-                positive integer no greater than 16 MiB; defaults to 1 MiB.
-            connection: ``"local"`` or a named profile loaded from
-                ``FILE_TOOLS_CONNECTIONS_FILE``. Defaults to ``"local"``.
+            command: Non-empty command or script (may be multiline).
+            cwd: Required working directory on the selected client.
+            timeout: Max seconds (default 120). ``0`` disables. Negative /
+                NaN / inf rejected. On timeout: exit 124, ``timed_out`` in
+                the report, partial output kept.
+            description: Optional short label shown as ``desc: ...`` in the
+                report header (does not affect execution).
+            interpreter: Executable or ``auto`` (default).
+            flags: Extra interpreter flags (platform-aware parsing). Usually
+                omit the injected command-string flag.
+            env: Optional env overrides. Names must match
+                ``[A-Za-z_][A-Za-z0-9_]*``; values must not contain NUL.
+            stdin: Optional UTF-8 text; then stdin is closed. Omit for
+                immediate EOF.
+            max_output_bytes: Per-stream retain limit while draining excess
+                (1..16 MiB, default 1 MiB).
+            client: ``"local"`` (default) or ``"ssh"``. SSH parameters are
+                ignored for local.
+            ssh_host: Hostname, IP, or ``Host`` alias from ``~/.ssh/config``.
+                Required when ``client="ssh"``.
+            ssh_port: Positive SSH port when ``client="ssh"``. No implicit 22.
+            ssh_user: SSH username when ``client="ssh"``.
+            ssh_password: Optional explicit password (prefer keys/agent).
+            ssh_key: Optional private-key path on the host filesystem.
+            ssh_flags: Space-separated supported OpenSSH flags: ``-X``,
+                ``-Y``, ``-A``, ``-a``, ``-C``. Others are ignored.
+            ssh_accept_unknown_host_key: Insecure opt-in to trust a host key
+                missing from ``known_hosts``.
 
         Returns:
-            A bounded text report containing ``exit``, resolved ``cwd``,
-            duration, the original command, stdout, and a labeled stderr
-            section when present. Non-zero exits are returned rather than
-            raised. Capture is bounded while the command runs; formatting adds
-            a 100,000-character cap and preserves both the beginning and end.
+            Bounded report with exit code, resolved ``cwd``, duration,
+            command, stdout, and stderr when present. Non-zero exits are
+            returned, not raised. Formatted text is capped (~100k chars) with
+            head and tail preserved.
 
         Raises:
-            ValueError: If ``cwd`` is empty or the named connection profile is
-                missing or invalid.
-            BashError: If the command, timeout, interpreter, flags,
-                environment, or output limit is invalid, or if the process/SSH
-                command cannot be started.
+            ValueError: Empty ``cwd``, invalid client, or missing SSH settings.
+            BashError: Invalid command/timeout/interpreter/flags/env/limit, or
+                process/SSH start failure.
 
         Warning:
-            Commands can modify or delete data and execute arbitrary programs
-            with the selected client's permissions.
+            Arbitrary code execution with the selected client's permissions.
+            Can modify or destroy data.
         """
         return await impl.bash(
             command,
@@ -441,5 +528,12 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             env=env,
             stdin=stdin,
             max_output_bytes=max_output_bytes,
-            connection=connection,
+            client=client,
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            ssh_password=ssh_password,
+            ssh_key=ssh_key,
+            ssh_flags=ssh_flags,
+            ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
         )
