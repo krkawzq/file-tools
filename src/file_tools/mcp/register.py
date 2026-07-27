@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Protocol, TypeVar
 
 from . import tools as impl
 
 
-_Tool = TypeVar("_Tool", bound=Callable[..., str])
+_Tool = TypeVar("_Tool", bound=Callable[..., Awaitable[str]])
 
 
 class _ToolRegistrar(Protocol):
@@ -19,7 +19,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
     """Register the five public tools on ``mcp``."""
 
     @mcp.tool
-    def read(
+    async def read(
         target_file: str,
         cwd: str,
         offset: int = 1,
@@ -96,7 +96,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             ReadError: If the path is missing, empty, not a regular file, or
                 cannot be read.
         """
-        return impl.read(
+        return await impl.read(
             target_file,
             cwd,
             offset=offset,
@@ -113,7 +113,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         )
 
     @mcp.tool
-    def write(
+    async def write(
         file_path: str,
         content: str,
         cwd: str,
@@ -176,7 +176,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             This operation is destructive for an existing file and does not
             preserve its previous contents.
         """
-        return impl.write(
+        return await impl.write(
             file_path,
             content,
             cwd,
@@ -191,7 +191,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         )
 
     @mcp.tool
-    def edit(
+    async def edit(
         file_path: str,
         old_string: str,
         new_string: str,
@@ -284,7 +284,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
                 ``replace_all`` is false.
             EditError: If the path is not a regular file or I/O fails.
         """
-        return impl.edit(
+        return await impl.edit(
             file_path,
             old_string,
             new_string,
@@ -302,7 +302,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         )
 
     @mcp.tool
-    def apply_patch(
+    async def apply_patch(
         patch_text: str,
         cwd: str,
         client: str = "local",
@@ -445,7 +445,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             Delete and move hunks remove source files after destination writes
             complete.
         """
-        return impl.apply_patch(
+        return await impl.apply_patch(
             patch_text,
             cwd,
             client=client,
@@ -459,7 +459,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         )
 
     @mcp.tool
-    def bash(
+    async def bash(
         command: str,
         cwd: str,
         timeout: float = 120.0,
@@ -559,7 +559,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             Commands can modify or delete data and execute arbitrary programs
             with the selected client's permissions.
         """
-        return impl.bash(
+        return await impl.bash(
             command,
             cwd,
             timeout=timeout,

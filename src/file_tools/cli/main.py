@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from functools import partial
 from typing import TextIO
+
+from anyio import run
 
 from . import tools as _tools
 
@@ -257,7 +260,7 @@ def main(
     try:
         if handler is _tools.bash:
             arguments["env"] = _parse_env_assignments(arguments.get("env"))
-        result = handler(**arguments)
+        result = run(partial(handler, **arguments))
     except Exception as exc:
         error_stream.write(f"error: {exc}\n")
         return 1

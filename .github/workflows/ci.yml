@@ -2,16 +2,37 @@ name: ci
 
 on:
   push:
+    branches: [main, master]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
+  # Python layer + extension smoke across OS × supported CPython.
+  # abi3-py312 means the extension ABI is shared; still matrix Python for the
+  # pure-Python / binding surface.
   test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.12", "3.13", "3.14"]
+        include:
+          # 3.15 is still pre-release; keep signal without blocking merges.
+          - os: ubuntu-latest
+            python-version: "3.15"
+            experimental: true
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
 
     steps:
       - uses: actions/checkout@v4
@@ -20,11 +41,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+          cache-suffix: ${{ matrix.os }}-py${{ matrix.python-version }}
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-${{ matrix.os }}
+          save-if: ${{ matrix.python-version == '3.12' }}
+
       - name: Install dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
 
       - name: Build extension
         run: uv run maturin develop --release --uv
@@ -32,8 +59,66 @@ jobs:
       - name: Run Python tests
         run: uv run python -m pytest
 
+  # Rust unit tests once per OS (independent of Python version matrix).
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # PyO3 still needs a CPython on PATH for the build script / link probe.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-suffix: rust-${{ matrix.os }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-${{ matrix.os }}
+
       - name: Run Rust tests
         run: cargo test --no-default-features
 
+  # One release wheel per OS is enough: tool.maturin uses pyo3/abi3-py312.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+          cache-suffix: build-${{ matrix.os }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-${{ matrix.os }}
+
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
+
       - name: Build wheel
         run: uv run maturin build --release --out dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7

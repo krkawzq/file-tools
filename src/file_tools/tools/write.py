@@ -70,13 +70,15 @@ async def write(
 
     exists = await c.exists(path)
     if exists and await c.is_dir(path):
-        raise WriteIsDirectoryError(f"目标路径是已存在的目录: {path}")
+        raise WriteIsDirectoryError(f"Destination path is an existing directory: {path}")
 
     is_new = not exists
     try:
         encoded = content.encode(encoding)
     except (AttributeError, UnicodeError, LookupError) as e:
-        raise WriteError(f"无法使用编码 {encoding!r} 序列化内容: {e}") from e
+        raise WriteError(
+            f"Failed to serialize content with encoding {encoding!r}: {e}"
+        ) from e
     try:
         await c.write_text(path, content, encoding=encoding)
     except ClientError as e:

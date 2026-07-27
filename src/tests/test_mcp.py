@@ -1,15 +1,21 @@
 import inspect
+from collections.abc import Awaitable
 from pathlib import Path
 from typing import Callable
+
+import pytest
 
 from file_tools.mcp.register import register_tools
 
 
 class _FakeMcp:
     def __init__(self) -> None:
-        self.tools: dict[str, Callable[..., str]] = {}
+        self.tools: dict[str, Callable[..., Awaitable[str]]] = {}
 
-    def tool(self, function: Callable[..., str]) -> Callable[..., str]:
+    def tool(
+        self,
+        function: Callable[..., Awaitable[str]],
+    ) -> Callable[..., Awaitable[str]]:
         self.tools[function.__name__] = function
         return function
 
@@ -44,17 +50,22 @@ def test_edit_doc_explains_create_prepend_and_append_modes() -> None:
     assert "combined with a non-empty ``old_string``" in doc
 
 
-def test_registered_mcp_tools_execute_against_local_client(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_registered_mcp_tools_execute_against_local_client(
+    tmp_path: Path,
+) -> None:
     mcp = _FakeMcp()
     register_tools(mcp)
 
     assert {"read", "write", "edit", "apply_patch", "bash"} <= set(mcp.tools)
 
     cwd = str(tmp_path)
-    write_result = mcp.tools["write"]("example.txt", "hello\n", cwd, client="local")
+    write_result = await mcp.tools["write"](
+        "example.txt", "hello\n", cwd, client="local"
+    )
     assert "wrote 6 bytes" in write_result
     assert (
-        mcp.tools["read"](
+        await mcp.tools["read"](
             "example.txt",
             cwd,
             show_line_numbers=False,
@@ -63,19 +74,19 @@ def test_registered_mcp_tools_execute_against_local_client(tmp_path: Path) -> No
         == "hello\n"
     )
 
-    edit_result = mcp.tools["edit"](
+    edit_result = await mcp.tools["edit"](
         "example.txt", "hello", "world", cwd, client="local"
     )
     assert edit_result.startswith("replaced ")
     assert "1 matches" in edit_result
 
-    create_result = mcp.tools["edit"](
+    create_result = await mcp.tools["edit"](
         "created.txt", "", "created", cwd, client="local"
     )
     assert create_result.endswith("created.txt")
     assert create_result.startswith("created ")
 
-    prepend_result = mcp.tools["edit"](
+    prepend_result = await mcp.tools["edit"](
         "example.txt",
         "",
         "header\n",
@@ -86,7 +97,7 @@ def test_registered_mcp_tools_execute_against_local_client(tmp_path: Path) -> No
     assert prepend_result.endswith("example.txt")
     assert prepend_result.startswith("prepended to ")
 
-    patch_result = mcp.tools["apply_patch"](
+    patch_result = await mcp.tools["apply_patch"](
         "*** Begin Patch\n"
         "*** Update File: example.txt\n"
         "@@\n"
@@ -99,5 +110,5 @@ def test_registered_mcp_tools_execute_against_local_client(tmp_path: Path) -> No
     assert "modified=['example.txt']" in patch_result
     assert (tmp_path / "example.txt").read_text() == "header\npatched\n"
 
-    bash_out = mcp.tools["bash"]("echo thin-wrapper", cwd, client="local")
+    bash_out = await mcp.tools["bash"]("echo thin-wrapper", cwd, client="local")
     assert "thin-wrapper" in bash_out

@@ -115,21 +115,21 @@ async def edit(
     path = await c.resolve(file_path)
 
     if prepend and old_string != "":
-        raise ValueError("prepend=True 要求 old_string 为空字符串")
+        raise ValueError("prepend=True requires old_string to be an empty string")
     if prepend and replace_all:
-        raise ValueError("prepend=True 与 replace_all=True 不能同时使用")
+        raise ValueError("prepend=True cannot be used together with replace_all=True")
 
     if old_string == "":
         if await c.exists(path):
             if not prepend:
                 raise EditFileExistsError(
-                    f"文件已存在，old_string 为空时只允许创建新文件: {path}\n"
-                    "提示: 如需在现有文件开头插入内容，请显式设置 prepend=True。"
+                    f"File already exists; empty old_string only creates new files: {path}\n"
+                    "Hint: to insert at the start of an existing file, set prepend=True explicitly."
                 )
             if await c.is_dir(path):
-                raise EditError(f"路径是目录: {path}")
+                raise EditError(f"Path is a directory: {path}")
             if not await c.is_file(path):
-                raise EditError(f"路径不是普通文件: {path}")
+                raise EditError(f"Path is not a regular file: {path}")
             try:
                 content = await c.read_text(path, encoding=encoding)
             except ClientError as e:
@@ -150,7 +150,9 @@ async def edit(
                 operation="prepended",
             )
         if prepend:
-            raise EditFileNotFoundError(f"prepend=True 需要已存在的文件: {path}")
+            raise EditFileNotFoundError(
+                f"prepend=True requires an existing file: {path}"
+            )
         try:
             await c.write_text(path, new_string, encoding=encoding)
         except ClientError as e:
@@ -164,11 +166,11 @@ async def edit(
 
     if not await c.exists(path):
         raise EditFileNotFoundError(
-            f"文件不存在: {path}\n"
-            f"提示: 如果要在新文件中写入内容，请将 old_string 设为空字符串。"
+            f"File does not exist: {path}\n"
+            f"Hint: to write content into a new file, set old_string to an empty string."
         )
     if not await c.is_file(path):
-        raise EditError(f"路径不是普通文件: {path}")
+        raise EditError(f"Path is not a regular file: {path}")
 
     try:
         content = await c.read_text(path, encoding=encoding)
@@ -187,9 +189,9 @@ async def edit(
         msg = str(e)
         if msg.startswith("NOT_FOUND:"):
             raise EditStringNotFoundError(
-                f"在文件中未找到 old_string:\n"
-                f"文件: {path}\n"
-                f"--- old_string ---\n{old_string!r}\n--- 文件内容预览 ---\n"
+                f"old_string not found in file:\n"
+                f"File: {path}\n"
+                f"--- old_string ---\n{old_string!r}\n--- file content preview ---\n"
                 f"{content[:500]}{'...' if len(content) > 500 else ''}"
             ) from e
         if msg.startswith("AMBIGUOUS:"):
@@ -203,16 +205,17 @@ async def edit(
                 end_ctx = min(len(raw), pos + mlen + 60)
                 snippet = raw[start_ctx:end_ctx].decode("utf-8", errors="replace")
                 context_lines.append(
-                    f"  匹配 #{i + 1} (第 {line_num} 行): ...{snippet!r}..."
+                    f"  match #{i + 1} (line {line_num}): ...{snippet!r}..."
                 )
             extra = "\n".join(context_lines)
             if len(matches) > 5:
-                extra += f"\n  ... 及其他 {len(matches) - 5} 处匹配"
+                extra += f"\n  ... and {len(matches) - 5} more matches"
             raise EditAmbiguousMatchError(
-                f"old_string 在文件中出现了 {len(matches)} 次（需要恰好 1 次）:\n"
-                f"文件: {path}\n{extra}\n"
-                f"提示: 请在 old_string 中包含更多上下文使其唯一，"
-                f"或设置 replace_all=True。"
+                f"old_string appears {len(matches)} times in the file "
+                f"(exactly 1 required):\n"
+                f"File: {path}\n{extra}\n"
+                f"Hint: include more context in old_string to make it unique, "
+                f"or set replace_all=True."
             ) from e
         raise EditError(msg) from e
 

@@ -105,11 +105,11 @@ async def read(
     path = await c.resolve(file_path)
 
     if await c.is_dir(path):
-        raise ReadIsDirectoryError(f"路径是目录而非文件: {path}")
+        raise ReadIsDirectoryError(f"Path is a directory, not a file: {path}")
     if not await c.is_file(path):
         if not await c.exists(path):
-            raise ReadFileNotFoundError(f"文件不存在: {path}")
-        raise ReadError(f"路径不是常规文件: {path}")
+            raise ReadFileNotFoundError(f"File does not exist: {path}")
+        raise ReadError(f"Path is not a regular file: {path}")
 
     try:
         text = await c.read_text(path, encoding=encoding)
@@ -117,7 +117,7 @@ async def read(
         raise ReadError(str(e)) from e
 
     if text == "":
-        raise ReadEmptyFileError(f"文件为空: {path}")
+        raise ReadEmptyFileError(f"File is empty: {path}")
 
     content, total_lines, start_line, end_line, truncated, lines = await run_blocking(
         _core.prepare_read,

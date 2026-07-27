@@ -39,7 +39,7 @@ class PatchParseError(PatchError):
 
     def __init__(self, message: str, line_number: int = 0):
         self.line_number = line_number
-        loc = f" (第 {line_number} 行)" if line_number else ""
+        loc = f" (line {line_number})" if line_number else ""
         super().__init__(f"{message}{loc}")
 
 
@@ -105,7 +105,7 @@ class _PatchParser:
             self._line_number += 1
             self._process_line(line)
         if self._state != "ended":
-            raise PatchParseError("patch 最后一行必须是 '*** End Patch'")
+            raise PatchParseError("patch must end with '*** End Patch'")
         return deepcopy(self._hunks)
 
     def _flush_chunk(self) -> None:
@@ -130,7 +130,7 @@ class _PatchParser:
             hunk = self._hunks[-1]
             if not hunk.chunks and hunk.move_path is None:
                 raise PatchParseError(
-                    "Update File hunk 不能为空", self._line_number
+                    "Update File hunk cannot be empty", self._line_number
                 )
 
     def _try_header(self, line: str) -> bool:
@@ -167,7 +167,10 @@ class _PatchParser:
             return True
         if header.startswith(MOVE_TO):
             if self._state != "update_file":
-                raise PatchParseError("*** Move to: 只能出现在 Update File 中", self._line_number)
+                raise PatchParseError(
+                    "*** Move to: is only valid inside Update File",
+                    self._line_number,
+                )
             self._hunks[-1].move_path = header[len(MOVE_TO) :].strip()
             return True
         return False
@@ -179,13 +182,13 @@ class _PatchParser:
             if trimmed == BEGIN_PATCH:
                 self._state = "started"
                 return
-            raise PatchParseError("patch 第一行必须是 '*** Begin Patch'")
+            raise PatchParseError("patch must start with '*** Begin Patch'")
 
         if self._state == "started":
             if self._try_header(line):
                 return
             raise PatchParseError(
-                f"'{trimmed}' 不是有效的 hunk 头",
+                f"'{trimmed}' is not a valid hunk header",
                 self._line_number,
             )
 
@@ -197,7 +200,7 @@ class _PatchParser:
                 self._add_file_parts.extend((line[1:], "\n"))
                 return
             raise PatchParseError(
-                f"Add File 内容行应以 '+' 开头: '{trimmed}'",
+                f"Add File content lines must start with '+': '{trimmed}'",
                 self._line_number,
             )
 
@@ -205,7 +208,7 @@ class _PatchParser:
             if self._try_header(line):
                 return
             raise PatchParseError(
-                f"Delete File hunk 不应包含内容行: '{trimmed}'",
+                f"Delete File hunk must not contain content lines: '{trimmed}'",
                 self._line_number,
             )
 
@@ -245,12 +248,14 @@ class _PatchParser:
                 self._current_chunk.new_lines.append(line[1:])
                 return
             raise PatchParseError(
-                f"无效的 Update File 行: '{trimmed}'",
+                f"Invalid Update File line: '{trimmed}'",
                 self._line_number,
             )
 
         if self._state == "ended":
-            raise PatchParseError("*** End Patch 之后还有内容", self._line_number)
+            raise PatchParseError(
+                "Unexpected content after *** End Patch", self._line_number
+            )
 
 
 @dataclass
@@ -403,7 +408,7 @@ async def apply_patch(
 
     hunks = await run_blocking(_PatchParser().parse, text)
     if not hunks:
-        raise PatchApplyError("patch 不包含任何文件操作")
+        raise PatchApplyError("patch contains no file operations")
 
     result = PatchResult(patch=text)
     initial: dict[str, _FileState] = {}
@@ -416,7 +421,7 @@ async def apply_patch(
 
     def validate_hunk_path(path: str, marker: str) -> None:
         if not path or "\x00" in path:
-            raise PatchApplyError(f"{marker} 路径无效: {path!r}")
+            raise PatchApplyError(f"{marker} path is invalid: {path!r}")
 
     async def load(path: str) -> _FileState:
         if path in current:
@@ -428,7 +433,7 @@ async def apply_patch(
                 state.is_dir = await backend.is_dir(path)
                 state.is_file = await backend.is_file(path)
         except ClientError as e:
-            raise PatchApplyError(f"无法检查路径 {path}: {e}") from e
+            raise PatchApplyError(f"Failed to check path {path}: {e}") from e
         initial[path] = deepcopy(state)
         current[path] = state
         return state
@@ -438,7 +443,7 @@ async def apply_patch(
             try:
                 state.content = await backend.read_text(path)
             except ClientError as e:
-                raise PatchApplyError(f"无法读取文件 {path}: {e}") from e
+                raise PatchApplyError(f"Failed to read file {path}: {e}") from e
             if path in initial and initial[path].content is None:
                 initial[path].content = state.content
         return state.content
@@ -450,7 +455,7 @@ async def apply_patch(
         if hunk.type == "add":
             state = await load(path)
             if state.exists:
-                raise PatchApplyError(f"Add File 目标已存在: {path}")
+                raise PatchApplyError(f"Add File destination already exists: {path}")
             content = hunk.contents or ""
             if content and not content.endswith("\n"):
                 content += "\n"
@@ -460,18 +465,18 @@ async def apply_patch(
         elif hunk.type == "delete":
             state = await load(path)
             if not state.exists:
-                raise PatchApplyError(f"要删除的文件不存在: {path}")
+                raise PatchApplyError(f"File to delete does not exist: {path}")
             if not state.is_file:
-                raise PatchApplyError(f"路径不是普通文件: {path}")
+                raise PatchApplyError(f"Path is not a regular file: {path}")
             current[path] = _FileState(exists=False)
             result.deleted.append(hunk.path)
 
         elif hunk.type == "update":
             state = await load(path)
             if not state.exists:
-                raise PatchApplyError(f"要修改的文件不存在: {path}")
+                raise PatchApplyError(f"File to update does not exist: {path}")
             if not state.is_file:
-                raise PatchApplyError(f"路径不是普通文件: {path}")
+                raise PatchApplyError(f"Path is not a regular file: {path}")
             original = await read_content(path, state)
 
             chunks = [
@@ -491,16 +496,20 @@ async def apply_patch(
                     chunks,
                 )
             except ValueError as e:
-                raise PatchSeekError(f"无法应用 patch 到 {path}: {e}") from e
+                raise PatchSeekError(f"Failed to apply patch to {path}: {e}") from e
 
             if hunk.move_path:
                 validate_hunk_path(hunk.move_path, "move")
                 write_path = canonical_path(await backend.resolve(hunk.move_path))
                 if write_path == path:
-                    raise PatchApplyError(f"Move 目标与源文件相同: {path}")
+                    raise PatchApplyError(
+                        f"Move destination is the same as the source file: {path}"
+                    )
                 destination = await load(write_path)
                 if destination.exists:
-                    raise PatchApplyError(f"Move 目标已存在: {write_path}")
+                    raise PatchApplyError(
+                        f"Move destination already exists: {write_path}"
+                    )
                 current[write_path] = _FileState(
                     exists=True, is_file=True, content=new_content
                 )
@@ -519,7 +528,7 @@ async def apply_patch(
                 try:
                     await backend.write_text(path, state.content or "")
                 except ClientError as e:
-                    raise PatchApplyError(f"无法写入文件 {path}: {e}") from e
+                    raise PatchApplyError(f"Failed to write file {path}: {e}") from e
 
     for path, state in current.items():
         before = initial[path]
@@ -527,7 +536,7 @@ async def apply_patch(
             try:
                 await backend.delete(path)
             except ClientError as e:
-                raise PatchApplyError(f"无法删除文件 {path}: {e}") from e
+                raise PatchApplyError(f"Failed to delete file {path}: {e}") from e
 
     return result
 

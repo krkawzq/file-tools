@@ -542,17 +542,19 @@ impl SshClient {
 
     #[pyo3(signature = (path, *, encoding = "utf-8"))]
     fn read_text(&self, py: Python<'_>, path: &str, encoding: &str) -> PyResult<String> {
-        let bytes = py.allow_threads(|| self.read_bytes_native(path)).map_err(|error| {
-            match error {
-                CoreError::Client(message) => CoreError::Client(message.replacen(
-                    "SSH read_bytes failed",
-                    "SSH read_text failed",
-                    1,
-                )),
-                other => other,
-            }
-            .into_pyerr()
-        })?;
+        let bytes = py
+            .allow_threads(|| self.read_bytes_native(path))
+            .map_err(|error| {
+                match error {
+                    CoreError::Client(message) => CoreError::Client(message.replacen(
+                        "SSH read_bytes failed",
+                        "SSH read_text failed",
+                        1,
+                    )),
+                    other => other,
+                }
+                .into_pyerr()
+            })?;
         decode_text(
             py,
             &bytes,
@@ -595,13 +597,7 @@ impl SshClient {
     }
 
     #[pyo3(signature = (path, *, parents = true, exist_ok = true))]
-    fn mkdir(
-        &self,
-        py: Python<'_>,
-        path: &str,
-        parents: bool,
-        exist_ok: bool,
-    ) -> PyResult<()> {
+    fn mkdir(&self, py: Python<'_>, path: &str, parents: bool, exist_ok: bool) -> PyResult<()> {
         let resolved = self.resolve_native(path);
         let command = if parents && exist_ok {
             format!("mkdir -p -- {}", shell_quote(&resolved))
@@ -632,8 +628,8 @@ impl SshClient {
         let resolved = self.resolve_native(path);
         let command = format!("rm -- {}", shell_quote(&resolved));
         py.allow_threads(|| self.checked_remote("delete", path, &command, None))
-        .map(|_| ())
-        .map_err(CoreError::into_pyerr)
+            .map(|_| ())
+            .map_err(CoreError::into_pyerr)
     }
 
     #[pyo3(signature = (

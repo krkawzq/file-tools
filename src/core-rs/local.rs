@@ -153,15 +153,19 @@ impl LocalClient {
 
     #[pyo3(signature = (path, *, encoding = "utf-8"))]
     fn read_text(&self, py: Python<'_>, path: &str, encoding: &str) -> PyResult<String> {
-        let bytes = py.allow_threads(|| self.read_bytes_native(path)).map_err(|error| {
-            match error {
-                CoreError::Client(message) => {
-                    CoreError::Client(message.replacen("read_bytes failed", "read_text failed", 1))
+        let bytes = py
+            .allow_threads(|| self.read_bytes_native(path))
+            .map_err(|error| {
+                match error {
+                    CoreError::Client(message) => CoreError::Client(message.replacen(
+                        "read_bytes failed",
+                        "read_text failed",
+                        1,
+                    )),
+                    other => other,
                 }
-                other => other,
-            }
-            .into_pyerr()
-        })?;
+                .into_pyerr()
+            })?;
         decode_text(py, &bytes, encoding, &format!("read_text failed: {path}"))
             .map_err(CoreError::into_pyerr)
     }
@@ -204,13 +208,7 @@ impl LocalClient {
     }
 
     #[pyo3(signature = (path, *, parents = true, exist_ok = true))]
-    fn mkdir(
-        &self,
-        py: Python<'_>,
-        path: &str,
-        parents: bool,
-        exist_ok: bool,
-    ) -> PyResult<()> {
+    fn mkdir(&self, py: Python<'_>, path: &str, parents: bool, exist_ok: bool) -> PyResult<()> {
         py.allow_threads(|| {
             let resolved = self.resolve_native(path);
             let result = if parents {
@@ -326,7 +324,7 @@ impl LocalClient {
                     None,
                 )
             })
-        .map_err(crate::client::ClientError::new_err)?;
+            .map_err(crate::client::ClientError::new_err)?;
         Ok(command_result(output, command, workdir, extras))
     }
 

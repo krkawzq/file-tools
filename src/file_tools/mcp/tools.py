@@ -54,7 +54,7 @@ def _client(
     )
 
 
-def read(
+async def read(
     target_file: str,
     cwd: str,
     offset: int = 1,
@@ -138,16 +138,17 @@ def read(
         ssh_flags=ssh_flags,
         ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
-    return _read(
+    result = await _read(
         target_file,
         offset=offset,
         limit=limit,
         show_line_numbers=show_line_numbers,
         client=c,
-    ).content
+    )
+    return result.content
 
 
-def write(
+async def write(
     file_path: str,
     content: str,
     cwd: str,
@@ -215,11 +216,11 @@ def write(
         ssh_flags=ssh_flags,
         ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
-    result = _write(file_path, content, client=c)
+    result = await _write(file_path, content, client=c)
     return f"wrote {result.bytes_written} bytes to {result.file_path}"
 
 
-def edit(
+async def edit(
     file_path: str,
     old_string: str,
     new_string: str,
@@ -336,7 +337,7 @@ def edit(
         ssh_flags=ssh_flags,
         ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
-    result = _edit(
+    result = await _edit(
         file_path,
         old_string,
         new_string,
@@ -351,7 +352,7 @@ def edit(
     return f"prepended to {result.file_path}"
 
 
-def apply_patch(
+async def apply_patch(
     patch_text: str,
     cwd: str,
     client: str = "local",
@@ -500,11 +501,11 @@ def apply_patch(
         ssh_flags=ssh_flags,
         ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
-    result = _apply_patch(patch_text, client=c)
+    result = await _apply_patch(patch_text, client=c)
     return f"added={result.added} modified={result.modified} deleted={result.deleted}"
 
 
-def bash(
+async def bash(
     command: str,
     cwd: str,
     timeout: float = 120.0,
@@ -622,7 +623,7 @@ def bash(
         ssh_flags=ssh_flags,
         ssh_accept_unknown_host_key=ssh_accept_unknown_host_key,
     )
-    result = _bash(
+    result = await _bash(
         command,
         cwd=cwd,
         timeout=timeout,
