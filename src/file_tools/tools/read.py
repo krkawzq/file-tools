@@ -1,9 +1,4 @@
-"""Read tool — loads file via Client, slices/formats via Rust kernel.
-
-Agent protocol:
-- ``offset`` is **1-based** start line (default 1).
-- Negative ``offset`` means tail: ``offset=-N`` → last N lines.
-"""
+"""Bounded text-file reads for local and SSH filesystems."""
 
 from __future__ import annotations
 
@@ -11,29 +6,36 @@ from dataclasses import dataclass, field
 from typing import List
 
 from .. import _core
-from ..client import Client, ClientError, resolve_client as _resolve_client
+from ..client import (
+    Client,
+    ClientError,
+    resolve_client as _resolve_client,
+    run_blocking,
+)
 
 DEFAULT_READ_LIMIT = 2000
 
 
 class ReadError(Exception):
-    """Read tool base error."""
+    """Base error raised while reading a file."""
 
 
 class ReadFileNotFoundError(ReadError):
-    """File does not exist."""
+    """Raised when the requested file does not exist."""
 
 
 class ReadIsDirectoryError(ReadError):
-    """Path is a directory."""
+    """Raised when the requested path is a directory."""
 
 
 class ReadEmptyFileError(ReadError):
-    """File is empty (0 bytes / empty text)."""
+    """Raised when the requested file is empty."""
 
 
 @dataclass
 class ReadResult:
+    """Selected file content and its source line range."""
+
     file_path: str
     content: str
     total_lines: int
@@ -49,7 +51,7 @@ class ReadResult:
         return len(self.content) > 0
 
 
-def read(
+async def read(
     file_path: str,
     *,
     offset: int = 1,
@@ -62,9 +64,9 @@ def read(
 
     Relative paths are resolved against ``client.cwd``. The target must exist,
     must be a regular file, and must contain at least one byte. Line selection
-    follows the agent protocol: positive offsets are 1-based, zero is treated
-    as line 1, and ``offset=-N`` returns the final ``N`` lines while ignoring
-    ``limit`` for the tail window.
+    uses 1-based positive offsets, treats zero as line 1, and uses
+    ``offset=-N`` to return the final ``N`` lines while ignoring ``limit`` for
+    the tail window.
 
     When ``show_line_numbers`` is true, the returned ``content`` uses
     ``cat -n``-style prefixes. A positive-offset read capped by ``limit`` also
@@ -81,8 +83,8 @@ def read(
         show_line_numbers: Prefix lines and show a truncation notice when
             applicable. Defaults to true.
         encoding: Text encoding used by the client. Defaults to UTF-8.
-        client: Existing local or SSH client. When omitted, use the cached
-            local client rooted at the process working directory.
+        client: Existing local or SSH client. When omitted, create a local
+            client rooted at the process working directory.
 
     Returns:
         A :class:`ReadResult` containing the resolved path, formatted content,
@@ -100,25 +102,29 @@ def read(
         raise ValueError(f"limit must be > 0: {limit}")
 
     c = _resolve_client(client)
-    path = c.resolve(file_path)
+    path = await c.resolve(file_path)
 
-    if not c.exists(path):
-        raise ReadFileNotFoundError(f"文件不存在: {path}")
-    if c.is_dir(path):
+    if await c.is_dir(path):
         raise ReadIsDirectoryError(f"路径是目录而非文件: {path}")
-    if not c.is_file(path):
+    if not await c.is_file(path):
+        if not await c.exists(path):
+            raise ReadFileNotFoundError(f"文件不存在: {path}")
         raise ReadError(f"路径不是常规文件: {path}")
 
     try:
-        text = c.read_text(path, encoding=encoding)
+        text = await c.read_text(path, encoding=encoding)
     except ClientError as e:
         raise ReadError(str(e)) from e
 
     if text == "":
         raise ReadEmptyFileError(f"文件为空: {path}")
 
-    content, total_lines, start_line, end_line, truncated, lines = _core.prepare_read(
-        text, offset, limit, show_line_numbers
+    content, total_lines, start_line, end_line, truncated, lines = await run_blocking(
+        _core.prepare_read,
+        text,
+        offset,
+        limit,
+        show_line_numbers,
     )
 
     return ReadResult(

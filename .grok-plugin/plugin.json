@@ -1,0 +1,26 @@
+{
+  "name": "file-tools",
+  "version": "0.1.0",
+  "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
+  "author": {
+    "name": "wzq"
+  },
+  "repository": "https://github.com/krkawzq/file-tools",
+  "homepage": "https://github.com/krkawzq/file-tools",
+  "keywords": [
+    "files",
+    "mcp",
+    "ssh",
+    "patching",
+    "developer-tools"
+  ],
+  "skills": "./skills/",
+  "mcpServers": {
+    "file-tools": {
+      "command": "python",
+      "args": [
+        "${GROK_PLUGIN_ROOT}/scripts/file_tools_mcp.py"
+      ]
+    }
+  }
+}

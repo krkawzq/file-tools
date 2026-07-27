@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..mcp.mcp import register_tools
+from ..mcp.register import register_tools
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP

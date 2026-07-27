@@ -58,6 +58,22 @@ def test_cli_write_allows_empty_stdin(tmp_path: Path) -> None:
     assert (tmp_path / "empty.txt").read_bytes() == b""
 
 
+def test_cli_edit_matches_mcp_parameters(tmp_path: Path) -> None:
+    (tmp_path / "note.txt").write_text("before\n")
+    stdout = io.StringIO()
+
+    exit_code = main(
+        ["edit", "note.txt", "before", "after", "--cwd", str(tmp_path)],
+        stdin=io.StringIO(),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    assert exit_code == 0
+    assert (tmp_path / "note.txt").read_text() == "after\n"
+    assert stdout.getvalue().startswith("replaced ")
+
+
 def test_cli_apply_patch_reads_patch_from_stdin(tmp_path: Path) -> None:
     patch = (
         "*** Begin Patch\n"

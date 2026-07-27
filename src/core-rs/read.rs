@@ -1,19 +1,16 @@
-//! Line slicing and cat -n formatting for agent-facing reads.
+//! Line slicing and numbered formatting for bounded reads.
 //!
-//! Agent protocol: **1-based** line numbers. Negative `offset` means tail
-//! (`offset = -N` → last N lines).
+//! Positive offsets are 1-based. Negative offsets select lines from the end.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::fmt::Write;
 
-/// Count lines in text (Python `for line in f` / split semantics).
+/// Count logical lines in text.
 ///
 /// - Empty text → 0
 /// - No trailing newline: last segment counts
-/// - Trailing newline: does not add an extra empty line beyond split rules used
-///   by iterating lines that keep content; we count `\n` and +1 if no trailing `\n`
-///   when non-empty — matching the previous Python `_count_lines` behaviour.
+/// - Trailing newline: does not add an extra empty line
 #[pyfunction]
 pub fn count_lines(text: &str) -> usize {
     count_lines_inner(text)
@@ -26,18 +23,11 @@ fn count_lines_inner(text: &str) -> usize {
     let mut count = text.bytes().filter(|&b| b == b'\n').count();
     if !text.ends_with('\n') {
         count += 1;
-    } else if count == 0 {
-        // text is just something without \n handled above; if ends with \n and
-        // had newlines, count is correct. Single "\n" → 1 line empty.
-        // "\n" has one \n and ends with \n → count=1. Good (one empty line).
     }
-    // File "a\nb\n" → 2 newlines, ends with \n → 2 lines. Good.
-    // File "a\nb" → 1 newline, no trailing → 2. Good.
     count
 }
 
-/// Split into lines **keeping** the trailing `\n` on each line except possibly
-/// the last (same as Python `for line in f`).
+/// Split text into lines while retaining line endings.
 fn lines_with_endings(text: &str) -> Vec<&str> {
     if text.is_empty() {
         return Vec::new();
@@ -56,10 +46,10 @@ fn lines_with_endings(text: &str) -> Vec<&str> {
     out
 }
 
-/// Resolve agent offset to 0-based start index and take count.
+/// Resolve an offset to a zero-based start index and line count.
 ///
 /// - `offset >= 1`: start at that 1-based line
-/// - `offset == 0`: treated as line 1 (lenient)
+/// - `offset == 0`: start at line 1
 /// - `offset < 0`: tail `|offset|` lines (`limit` ignored for window size)
 fn resolve_window(total_lines: usize, offset: i64, limit: usize) -> PyResult<(usize, usize, bool)> {
     if limit == 0 {
@@ -125,7 +115,6 @@ fn format_cat_n_inner(
     let mut out = String::with_capacity(body_len + lines.len() * (width + 1));
     for (i, line) in lines.iter().enumerate() {
         let n = start_line + i;
-        // Preserve whether line already ends with \n.
         let body = line.as_str();
         write!(&mut out, "{n:>width$}\t").expect("writing to String cannot fail");
         out.push_str(body);
@@ -143,7 +132,7 @@ fn format_cat_n_inner(
     out
 }
 
-/// Full read pipeline for agent use.
+/// Prepare a bounded line window.
 ///
 /// Returns `(content, total_lines, start_line, end_line, truncated, raw_lines)`.
 ///
@@ -157,8 +146,6 @@ pub fn prepare_read(
     limit: usize,
     show_line_numbers: bool,
 ) -> PyResult<(String, usize, usize, usize, bool, Vec<String>)> {
-    // Build line boundaries once. The previous implementation scanned the
-    // whole text to count lines and then scanned it again to slice the window.
     let all_lines = lines_with_endings(text);
     let total = all_lines.len();
     let (start, take, truncated) = resolve_window(total, offset, limit)?;

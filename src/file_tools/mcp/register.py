@@ -1,7 +1,4 @@
-"""Thin ``@mcp.tool`` wrappers for the file tools.
-
-Business logic lives in :mod:`file_tools.mcp.tools` as plain functions.
-"""
+"""Register the public file tools with an MCP server."""
 
 from __future__ import annotations
 
@@ -19,7 +16,7 @@ class _ToolRegistrar(Protocol):
 
 
 def register_tools(mcp: _ToolRegistrar) -> None:
-    """Thin wrappers — all logic delegated to :mod:`file_tools.mcp.tools`."""
+    """Register the five public tools on ``mcp``."""
 
     @mcp.tool
     def read(

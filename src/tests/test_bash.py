@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from file_tools.client import LocalClient
-from file_tools.client.base import inject_cmd_flag
+from file_tools import LocalClient
+from file_tools._core import inject_cmd_flag
 from file_tools.tools.bash import BashError, BashResult, bash
 
 

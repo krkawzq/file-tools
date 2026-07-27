@@ -1,9 +1,4 @@
-"""Codex apply_patch tool.
-
-- Parser (Python): StreamingPatchParser
-- String ops (Rust): seek_sequence / derive_new_contents
-- I/O: via Client backend
-"""
+"""Structured multi-file patches for local and SSH filesystems."""
 
 from __future__ import annotations
 
@@ -17,11 +12,12 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .. import _core
-from ..client import Client, ClientError, resolve_client as _resolve_client
-
-# ---------------------------------------------------------------------------
-# Markers
-# ---------------------------------------------------------------------------
+from ..client import (
+    Client,
+    ClientError,
+    resolve_client as _resolve_client,
+    run_blocking,
+)
 
 BEGIN_PATCH = "*** Begin Patch"
 END_PATCH = "*** End Patch"
@@ -32,14 +28,15 @@ MOVE_TO = "*** Move to: "
 EOF_MARKER = "*** End of File"
 CHANGE_CONTEXT = "@@ "
 EMPTY_CHANGE_CONTEXT = "@@"
-ENVIRONMENT_ID = "*** Environment ID:"
 
 
 class PatchError(Exception):
-    """apply_patch base error."""
+    """Base error raised while parsing or applying a patch."""
 
 
 class PatchParseError(PatchError):
+    """Raised when a patch document does not follow the required grammar."""
+
     def __init__(self, message: str, line_number: int = 0):
         self.line_number = line_number
         loc = f" (第 {line_number} 行)" if line_number else ""
@@ -47,15 +44,17 @@ class PatchParseError(PatchError):
 
 
 class PatchApplyError(PatchError):
-    """Filesystem apply failure."""
+    """Raised when patch path validation or filesystem mutation fails."""
 
 
 class PatchSeekError(PatchError):
-    """Could not locate matching lines."""
+    """Raised when an update chunk cannot be located."""
 
 
 @dataclass
 class UpdateFileChunk:
+    """One context-aware update within a file hunk."""
+
     change_context: Optional[str] = None
     old_lines: List[str] = field(default_factory=list)
     new_lines: List[str] = field(default_factory=list)
@@ -64,7 +63,9 @@ class UpdateFileChunk:
 
 @dataclass
 class Hunk:
-    type: str  # add | delete | update
+    """One add, delete, or update operation."""
+
+    type: str
     path: str
     contents: Optional[str] = None
     move_path: Optional[str] = None
@@ -72,14 +73,9 @@ class Hunk:
 
 
 @dataclass
-class PatchArgs:
-    hunks: List[Hunk]
-    patch: str
-    environment_id: Optional[str] = None
-
-
-@dataclass
 class PatchResult:
+    """Files affected by a completed patch."""
+
     added: List[str] = field(default_factory=list)
     modified: List[str] = field(default_factory=list)
     deleted: List[str] = field(default_factory=list)
@@ -94,64 +90,23 @@ class PatchResult:
         return not (self.added or self.modified or self.deleted)
 
 
-class StreamingPatchParser:
-    """Line-oriented state machine for the Codex patch DSL."""
+class _PatchParser:
+    """Parse a complete structured patch."""
 
     def __init__(self) -> None:
-        self._line_buffer: list[str] = []
         self._line_number: int = 0
         self._state: str = "not_started"
         self._hunks: List[Hunk] = []
-        self._environment_id: Optional[str] = None
         self._current_chunk: Optional[UpdateFileChunk] = None
         self._add_file_parts: list[str] | None = None
 
-    @property
-    def hunks(self) -> List[Hunk]:
-        snapshot = deepcopy(self._hunks)
-        if self._state == "add_file" and self._add_file_parts is not None:
-            snapshot[-1].contents = "".join(self._add_file_parts)
-        return snapshot
-
-    @property
-    def environment_id(self) -> Optional[str]:
-        return self._environment_id
-
-    def push_delta(self, delta: str) -> List[Hunk]:
-        self._consume_delta(delta)
-        return self.hunks
-
-    def _consume_delta(self, delta: str) -> None:
-        """Consume a stream fragment without building lines character by character."""
-        if not delta:
-            return
-        parts = delta.split("\n")
-        if len(parts) == 1:
-            self._line_buffer.append(delta)
-            return
-
-        first_line = "".join(self._line_buffer) + parts[0]
-        self._line_buffer.clear()
-        self._consume_line(first_line)
-        for line in parts[1:-1]:
-            self._consume_line(line)
-        if parts[-1]:
-            self._line_buffer.append(parts[-1])
-
-    def _consume_line(self, line: str) -> None:
-        if line.endswith("\r"):
-            line = line[:-1]
-        self._line_number += 1
-        self._process_line(line)
-
-    def finish(self) -> List[Hunk]:
-        if self._line_buffer:
-            line = "".join(self._line_buffer)
-            self._line_buffer.clear()
-            self._consume_line(line)
+    def parse(self, text: str) -> List[Hunk]:
+        for line in text.splitlines():
+            self._line_number += 1
+            self._process_line(line)
         if self._state != "ended":
             raise PatchParseError("patch 最后一行必须是 '*** End Patch'")
-        return self.hunks
+        return deepcopy(self._hunks)
 
     def _flush_chunk(self) -> None:
         if self._state == "update_file" and self._current_chunk is not None:
@@ -186,9 +141,6 @@ class StreamingPatchParser:
             self._flush_add_file()
             self._ensure_update_not_empty()
             self._state = "ended"
-            return True
-        if header.startswith(ENVIRONMENT_ID):
-            self._environment_id = header[len(ENVIRONMENT_ID) :].strip()
             return True
         if header.startswith(ADD_FILE):
             self._flush_add_file()
@@ -266,7 +218,6 @@ class StreamingPatchParser:
                 self._current_chunk.is_end_of_file = True
                 return
             if line.rstrip() == EMPTY_CHANGE_CONTEXT or line.startswith(CHANGE_CONTEXT):
-                # New chunk boundary
                 if self._current_chunk is not None and (
                     self._current_chunk.old_lines
                     or self._current_chunk.new_lines
@@ -283,7 +234,6 @@ class StreamingPatchParser:
             if self._current_chunk is None:
                 self._current_chunk = UpdateFileChunk()
             if line.startswith(" "):
-                # context line kept in both
                 content = line[1:]
                 self._current_chunk.old_lines.append(content)
                 self._current_chunk.new_lines.append(content)
@@ -333,13 +283,13 @@ def _path_identity(
     return path
 
 
-def apply_patch(
+async def apply_patch(
     patch_text: str,
     cwd: str | None = None,
     *,
     client: Client | None = None,
 ) -> PatchResult:
-    """Apply a structured Codex patch to one or more text files.
+    """Apply a structured patch to one or more text files.
 
     All patch paths are resolved through the selected local or SSH client. The
     complete patch is parsed and preflighted against an in-memory filesystem
@@ -417,8 +367,8 @@ def apply_patch(
         patch_text: Complete document including ``*** Begin Patch`` and
             ``*** End Patch``. A surrounding ``<<EOF`` heredoc is accepted.
         cwd: Optional local cwd used only when ``client`` is omitted.
-        client: Existing local or SSH client. When omitted, create a cached
-            local client rooted at ``cwd`` or the process working directory.
+        client: Existing local or SSH client. When omitted, create a local
+            client rooted at ``cwd`` or the process working directory.
 
     Returns:
         A :class:`PatchResult` listing added, modified, and deleted
@@ -436,43 +386,26 @@ def apply_patch(
     if client is not None:
         backend = client
     elif cwd:
-        backend = _resolve_client(client_type="local", cwd=str(cwd))
+        backend = _resolve_client(client="local", cwd=str(cwd))
     else:
         backend = _resolve_client()
 
-    text = patch_text.strip("\n")
+    text = patch_text.removesuffix("\n").removesuffix("\r")
     if text.startswith("<<"):
         first_nl = text.find("\n")
         if first_nl != -1:
             header = text[:first_nl]
-            tag = header[2:].strip().strip("'\"")
+            tag = header[2:]
             if tag:
                 heredoc_lines = text[first_nl + 1 :].split("\n")
-                if heredoc_lines and heredoc_lines[-1].strip() == tag:
+                if heredoc_lines and heredoc_lines[-1] == tag:
                     text = "\n".join(heredoc_lines[:-1])
-    text = text.strip("\n")
-    lines = text.split("\n")
-    while lines and lines[0].strip() == "":
-        lines.pop(0)
-    while lines and lines[-1].strip() == "":
-        lines.pop()
-    text = "\n".join(lines)
 
-    parser = StreamingPatchParser()
-    if text:
-        # Complete patches do not need the defensive snapshots returned by
-        # the public streaming API.
-        parser._consume_delta(text + "\n")
-    hunks = parser.finish()
-    args = PatchArgs(
-        hunks=hunks,
-        patch=text,
-        environment_id=parser.environment_id,
-    )
-    if not args.hunks:
+    hunks = await run_blocking(_PatchParser().parse, text)
+    if not hunks:
         raise PatchApplyError("patch 不包含任何文件操作")
 
-    result = PatchResult(patch=args.patch)
+    result = PatchResult(patch=text)
     initial: dict[str, _FileState] = {}
     current: dict[str, _FileState] = {}
     path_aliases: dict[str, str] = {}
@@ -485,39 +418,37 @@ def apply_patch(
         if not path or "\x00" in path:
             raise PatchApplyError(f"{marker} 路径无效: {path!r}")
 
-    def load(path: str) -> _FileState:
+    async def load(path: str) -> _FileState:
         if path in current:
             return current[path]
         try:
-            exists = backend.exists(path)
+            exists = await backend.exists(path)
             state = _FileState(exists=exists)
             if exists:
-                state.is_dir = backend.is_dir(path)
-                state.is_file = backend.is_file(path)
+                state.is_dir = await backend.is_dir(path)
+                state.is_file = await backend.is_file(path)
         except ClientError as e:
             raise PatchApplyError(f"无法检查路径 {path}: {e}") from e
         initial[path] = deepcopy(state)
         current[path] = state
         return state
 
-    def read_content(path: str, state: _FileState) -> str:
+    async def read_content(path: str, state: _FileState) -> str:
         if state.content is None:
             try:
-                state.content = backend.read_text(path)
+                state.content = await backend.read_text(path)
             except ClientError as e:
                 raise PatchApplyError(f"无法读取文件 {path}: {e}") from e
             if path in initial and initial[path].content is None:
                 initial[path].content = state.content
         return state.content
 
-    # Preflight every hunk against an in-memory view. No filesystem mutation
-    # happens until all paths and update chunks have been validated.
-    for hunk in args.hunks:
+    for hunk in hunks:
         validate_hunk_path(hunk.path, hunk.type)
-        path = canonical_path(backend.resolve(hunk.path))
+        path = canonical_path(await backend.resolve(hunk.path))
 
         if hunk.type == "add":
-            state = load(path)
+            state = await load(path)
             if state.exists:
                 raise PatchApplyError(f"Add File 目标已存在: {path}")
             content = hunk.contents or ""
@@ -527,7 +458,7 @@ def apply_patch(
             result.added.append(hunk.path)
 
         elif hunk.type == "delete":
-            state = load(path)
+            state = await load(path)
             if not state.exists:
                 raise PatchApplyError(f"要删除的文件不存在: {path}")
             if not state.is_file:
@@ -536,12 +467,12 @@ def apply_patch(
             result.deleted.append(hunk.path)
 
         elif hunk.type == "update":
-            state = load(path)
+            state = await load(path)
             if not state.exists:
                 raise PatchApplyError(f"要修改的文件不存在: {path}")
             if not state.is_file:
                 raise PatchApplyError(f"路径不是普通文件: {path}")
-            original = read_content(path, state)
+            original = await read_content(path, state)
 
             chunks = [
                 (
@@ -553,16 +484,21 @@ def apply_patch(
                 for c in hunk.chunks
             ]
             try:
-                new_content = _core.derive_new_contents(original, path, chunks)
+                new_content = await run_blocking(
+                    _core.derive_new_contents,
+                    original,
+                    path,
+                    chunks,
+                )
             except ValueError as e:
                 raise PatchSeekError(f"无法应用 patch 到 {path}: {e}") from e
 
             if hunk.move_path:
                 validate_hunk_path(hunk.move_path, "move")
-                write_path = canonical_path(backend.resolve(hunk.move_path))
+                write_path = canonical_path(await backend.resolve(hunk.move_path))
                 if write_path == path:
                     raise PatchApplyError(f"Move 目标与源文件相同: {path}")
-                destination = load(write_path)
+                destination = await load(write_path)
                 if destination.exists:
                     raise PatchApplyError(f"Move 目标已存在: {write_path}")
                 current[write_path] = _FileState(
@@ -576,16 +512,12 @@ def apply_patch(
                 )
                 result.modified.append(hunk.path)
 
-    # Write all final file states before deleting sources. This cannot make a
-    # generic Client fully transactional, but it prevents logical/preflight
-    # failures from leaving a partially applied patch and avoids deleting move
-    # sources before their destinations are durable.
     for path, state in current.items():
         before = initial[path]
         if state.exists and state.is_file:
             if not before.exists or state.content != before.content:
                 try:
-                    backend.write_text(path, state.content or "")
+                    await backend.write_text(path, state.content or "")
                 except ClientError as e:
                     raise PatchApplyError(f"无法写入文件 {path}: {e}") from e
 
@@ -593,7 +525,7 @@ def apply_patch(
         before = initial[path]
         if before.exists and before.is_file and not state.exists:
             try:
-                backend.delete(path)
+                await backend.delete(path)
             except ClientError as e:
                 raise PatchApplyError(f"无法删除文件 {path}: {e}") from e
 

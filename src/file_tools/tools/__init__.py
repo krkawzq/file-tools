@@ -1,4 +1,4 @@
-"""Tool implementations: I/O via Client; string ops via Rust core."""
+"""Public file-tool implementations."""
 
 from .apply_patch import apply_patch
 from .bash import bash

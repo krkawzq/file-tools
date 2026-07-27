@@ -1,7 +1,7 @@
 {
   "name": "file-tools",
-  "version": "0.1.0",
-  "description": "MCP tools for local and SSH-backed file operations and command execution.",
+  "version": "0.1.0+codex.20260727123225",
+  "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
   "author": {
     "name": "wzq"
   },
@@ -17,8 +17,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "File Tools",
-    "shortDescription": "Read, edit, patch, and run commands on local or SSH filesystems",
-    "longDescription": "Use MCP tools to inspect and modify text files, apply structured patches, and execute bounded commands through local or SSH-backed filesystem clients.",
+    "shortDescription": "Precisely inspect and update local or SSH workspaces",
+    "longDescription": "Work with UTF-8 text files and foreground commands in an explicit local or SSH workspace. Read line windows or tails, make uniqueness-checked edits, apply preflighted multi-file patches, replace complete files intentionally, and run bounded diagnostics with controlled input and output.",
     "developerName": "wzq",
     "category": "Developer Tools",
     "capabilities": [
@@ -27,13 +27,14 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Inspect files in a local or SSH workspace.",
-      "Apply a precise patch to files in a selected workspace.",
-      "Run a bounded command in a local or SSH working directory."
+      "Inspect and safely update files in an explicit workspace.",
+      "Apply a structured multi-file patch over SSH.",
+      "Run a bounded diagnostic command in a selected workspace."
     ],
     "brandColor": "#2563EB",
     "composerIcon": "./assets/file-tools.svg",
     "logo": "./assets/file-tools.svg",
     "screenshots": []
-  }
+  },
+  "homepage": "https://github.com/krkawzq/file-tools"
 }

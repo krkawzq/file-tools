@@ -1,0 +1,31 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "file-tools",
+  "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
+  "owner": {
+    "name": "wzq"
+  },
+  "plugins": [
+    {
+      "name": "file-tools",
+      "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
+      "version": "0.1.0",
+      "author": {
+        "name": "wzq"
+      },
+      "source": {
+        "source": "github",
+        "repo": "krkawzq/file-tools"
+      },
+      "category": "development",
+      "homepage": "https://github.com/krkawzq/file-tools",
+      "keywords": [
+        "files",
+        "mcp",
+        "ssh",
+        "patching",
+        "developer-tools"
+      ]
+    }
+  ]
+}

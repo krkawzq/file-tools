@@ -2,8 +2,7 @@ import inspect
 from pathlib import Path
 from typing import Callable
 
-from file_tools.client import clear_client_cache
-from file_tools.mcp.mcp import register_tools
+from file_tools.mcp.register import register_tools
 
 
 class _FakeMcp:
@@ -46,7 +45,6 @@ def test_edit_doc_explains_create_prepend_and_append_modes() -> None:
 
 
 def test_registered_mcp_tools_execute_against_local_client(tmp_path: Path) -> None:
-    clear_client_cache()
     mcp = _FakeMcp()
     register_tools(mcp)
 

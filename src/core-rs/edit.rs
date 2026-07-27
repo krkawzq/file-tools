@@ -4,9 +4,7 @@
 //! 1. Exact substring match
 //! 2. Per-line rstrip match (tolerate trailing whitespace drift)
 //!
-//! Positions are **byte offsets** into UTF-8 text. Callers that slice in Python
-//! must use the returned new text from [`edit_text`] / [`apply_replacements_text`]
-//! rather than re-slicing with Python `str` indices.
+//! Match positions are byte offsets into UTF-8 text.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -68,8 +66,7 @@ fn exact_find_all(text: &str, pattern: &str) -> Vec<(usize, usize)> {
 }
 
 fn rstrip_lines_find_all(text: &str, pattern: &str) -> Vec<(usize, usize)> {
-    // Split keeping track of whether the original had a trailing newline via
-    // split('\n') semantics (same as Python).
+    // Preserve the trailing segment so newline state remains observable.
     let text_lines: Vec<&str> = text.split('\n').collect();
     let pattern_lines: Vec<&str> = pattern.split('\n').collect();
     let pattern_len = pattern_lines.len();
@@ -80,7 +77,6 @@ fn rstrip_lines_find_all(text: &str, pattern: &str) -> Vec<(usize, usize)> {
     let pattern_rstrip: Vec<&str> = pattern_lines.iter().map(|l| l.trim_end()).collect();
     let mut matches = Vec::new();
 
-    // Precompute byte offsets of each line start.
     let mut line_starts = Vec::with_capacity(text_lines.len());
     let mut off = 0usize;
     for (i, line) in text_lines.iter().enumerate() {
@@ -103,7 +99,6 @@ fn rstrip_lines_find_all(text: &str, pattern: &str) -> Vec<(usize, usize)> {
             continue;
         }
         let byte_offset = line_starts[i];
-        // Match length: sum of raw line lengths + intervening newlines.
         let mut match_length: usize =
             window.iter().map(|l| l.len()).sum::<usize>() + (pattern_len - 1);
         // In CRLF text, split('\n') leaves the final '\r' attached to each

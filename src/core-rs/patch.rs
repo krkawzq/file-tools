@@ -1,11 +1,9 @@
-//! Patch string operators ported from codex / grok apply_patch.
-//!
-//! Pure functions only — no filesystem I/O.
+//! Pure text transformations for structured patches.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-/// Four-tier fuzzy line sequence search (codex-rs seek_sequence).
+/// Search for a line sequence with progressively relaxed normalization.
 #[pyfunction]
 pub fn seek_sequence(
     lines: Vec<String>,
@@ -38,7 +36,6 @@ fn seek_sequence_inner(
         return None;
     }
 
-    // Pass 1: exact
     for i in search_start..=search_end {
         if lines[i..i + pattern.len()] == *pattern {
             return Some(i);
@@ -47,7 +44,6 @@ fn seek_sequence_inner(
 
     let pattern_rstripped: Vec<&str> = pattern.iter().map(|line| line.trim_end()).collect();
 
-    // Pass 2: rstrip
     for i in search_start..=search_end {
         let ok = pattern_rstripped
             .iter()
@@ -60,7 +56,6 @@ fn seek_sequence_inner(
 
     let pattern_trimmed: Vec<&str> = pattern.iter().map(|line| line.trim()).collect();
 
-    // Pass 3: trim
     for i in search_start..=search_end {
         let ok = pattern_trimmed
             .iter()
@@ -71,7 +66,6 @@ fn seek_sequence_inner(
         }
     }
 
-    // Pass 4: unicode normalise
     for i in search_start..=search_end {
         let ok = pattern
             .iter()
@@ -235,8 +229,7 @@ pub fn derive_new_contents(
     path: &str,
     chunks: Vec<Chunk>,
 ) -> PyResult<String> {
-    // A move-only hunk must not rewrite newline shape or add a newline that
-    // was absent from the source.
+    // Move-only hunks preserve the source bytes.
     if chunks.is_empty() {
         return Ok(original_content.to_owned());
     }
@@ -245,9 +238,7 @@ pub fn derive_new_contents(
         .as_bytes()
         .windows(2)
         .any(|window| window == b"\r\n");
-    // `split_terminator` removes only the newline sentinel while retaining real
-    // trailing blank lines. `split('\n')` + one `pop()` cannot distinguish the
-    // two and used to silently remove a blank line on every update/move.
+    // Remove the newline sentinel while retaining real trailing blank lines.
     let original_lines: Vec<String> = original_content
         .split_terminator('\n')
         .map(|line| {

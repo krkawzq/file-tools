@@ -1,4 +1,4 @@
-"""Write tool — full-file write through Client."""
+"""Whole-file text writes for local and SSH filesystems."""
 
 from __future__ import annotations
 
@@ -8,15 +8,17 @@ from ..client import Client, ClientError, resolve_client as _resolve_client
 
 
 class WriteError(Exception):
-    """Write tool base error."""
+    """Base error raised while writing a file."""
 
 
 class WriteIsDirectoryError(WriteError):
-    """Target path is an existing directory."""
+    """Raised when the destination is an existing directory."""
 
 
 @dataclass
 class WriteResult:
+    """Resolved destination and write outcome."""
+
     file_path: str
     bytes_written: int
     is_new_file: bool
@@ -26,7 +28,7 @@ class WriteResult:
         return self.bytes_written > 0 or self.is_new_file
 
 
-def write(
+async def write(
     file_path: str,
     content: str,
     *,
@@ -49,8 +51,8 @@ def write(
         file_path: Absolute, home-relative, or client-cwd-relative destination.
         content: Complete replacement text.
         encoding: Encoding used to serialize ``content``. Defaults to UTF-8.
-        client: Existing local or SSH client. When omitted, use the cached
-            local client rooted at the process working directory.
+        client: Existing local or SSH client. When omitted, create a local
+            client rooted at the process working directory.
 
     Returns:
         A :class:`WriteResult` containing the resolved path, UTF-8 byte count,
@@ -64,10 +66,10 @@ def write(
         Writing an existing file irreversibly replaces its previous contents.
     """
     c = _resolve_client(client)
-    path = c.resolve(file_path)
+    path = await c.resolve(file_path)
 
-    exists = c.exists(path)
-    if exists and c.is_dir(path):
+    exists = await c.exists(path)
+    if exists and await c.is_dir(path):
         raise WriteIsDirectoryError(f"目标路径是已存在的目录: {path}")
 
     is_new = not exists
@@ -76,7 +78,7 @@ def write(
     except (AttributeError, UnicodeError, LookupError) as e:
         raise WriteError(f"无法使用编码 {encoding!r} 序列化内容: {e}") from e
     try:
-        c.write_text(path, content, encoding=encoding)
+        await c.write_text(path, content, encoding=encoding)
     except ClientError as e:
         raise WriteError(str(e)) from e
 

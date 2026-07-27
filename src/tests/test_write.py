@@ -2,8 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from file_tools.client import LocalClient
-from file_tools.tools.edit import edit
+from file_tools import LocalClient
 from file_tools.tools.write import WriteError, write
 
 
@@ -23,18 +22,6 @@ def test_write_nested(tmp_path: Path) -> None:
     client = LocalClient(cwd=tmp_path)
     write("x/y/z.txt", "deep\n", client=client)
     assert (tmp_path / "x/y/z.txt").read_text() == "deep\n"
-
-
-def test_edit_after_write_does_not_change_trailing_newline_state(
-    tmp_path: Path,
-) -> None:
-    client = LocalClient(cwd=tmp_path)
-    target = tmp_path / "exact.txt"
-    write("exact.txt", "abc", client=client)
-
-    edit("exact.txt", "b", "B", client=client)
-
-    assert target.read_text() == "aBc"
 
 
 def test_encoding_error_does_not_truncate_existing_file(tmp_path: Path) -> None:

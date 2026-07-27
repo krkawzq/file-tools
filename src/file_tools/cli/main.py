@@ -88,7 +88,7 @@ def _add_client_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def create_parser() -> argparse.ArgumentParser:
-    """Build the top-level parser and its four MCP-aligned subcommands."""
+    """Build the top-level parser and its five MCP-aligned subcommands."""
     parser = argparse.ArgumentParser(
         prog="file-tools",
         description=(
@@ -137,10 +137,34 @@ def create_parser() -> argparse.ArgumentParser:
     _add_client_arguments(write_parser)
     write_parser.set_defaults(_handler=_tools.write, _reads_stdin=True)
 
+    edit_parser = subparsers.add_parser(
+        "edit",
+        help="replace text, create a file, or prepend text",
+        description=(
+            "Replace an exact string in a UTF-8 text file. An empty old_string "
+            "creates a file, or prepends when --prepend is supplied."
+        ),
+    )
+    edit_parser.add_argument("file_path", help="file to edit")
+    edit_parser.add_argument("old_string", help="literal text to replace")
+    edit_parser.add_argument("new_string", help="literal replacement text")
+    edit_parser.add_argument(
+        "--replace-all",
+        action="store_true",
+        help="replace every non-overlapping match",
+    )
+    edit_parser.add_argument(
+        "--prepend",
+        action="store_true",
+        help="prepend new_string; requires an empty old_string",
+    )
+    _add_client_arguments(edit_parser)
+    edit_parser.set_defaults(_handler=_tools.edit, _reads_stdin=False)
+
     patch_parser = subparsers.add_parser(
         "apply_patch",
-        help="apply a Codex patch from stdin",
-        description="Read a complete Codex patch from stdin and apply it.",
+        help="apply a structured patch from stdin",
+        description="Read a complete structured patch from stdin and apply it.",
     )
     _add_client_arguments(patch_parser)
     patch_parser.set_defaults(_handler=_tools.apply_patch, _reads_stdin=True)

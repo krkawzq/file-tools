@@ -1,35 +1,66 @@
-"""Shell-command tool built on :meth:`Client.exec_command`.
-
-The tool intentionally applies no command-content filtering, sandboxing,
-approval gates, or background-task policy.  The selected shell receives the
-command exactly as provided.  ``cwd`` remains explicit on every call so local
-and remote executions have the same, predictable interface.
-"""
+"""Foreground command execution for local and SSH clients."""
 
 from __future__ import annotations
 
 import math
 import os
+import shlex
+import subprocess
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from ..client import Client, ClientError, CommandResult
-from ..client import resolve_client as _resolve_client
-from ..client._output import (
-    DEFAULT_MAX_OUTPUT_BYTES,
-    validate_max_output_bytes,
-)
-from ..client.base import (
-    format_argv,
+from .._core import (
+    CommandResult,
     inject_cmd_flag,
-    normalize_env,
     normalize_flags,
 )
+from ..client import Client, ClientError, resolve_client as _resolve_client
 
-DEFAULT_INTERPRETER = "auto"
+DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024
 DEFAULT_FLAGS = ""
+DEFAULT_INTERPRETER = "auto"
 DEFAULT_TIMEOUT_SECS = 120.0
 MAX_OUTPUT_CHARS = 100_000
+MAX_CONFIGURABLE_OUTPUT_BYTES = 16 * 1024 * 1024
+
+
+def _validate_max_output_bytes(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("max_output_bytes must be an integer")
+    if value <= 0:
+        raise ValueError("max_output_bytes must be greater than zero")
+    if value > MAX_CONFIGURABLE_OUTPUT_BYTES:
+        raise ValueError(
+            "max_output_bytes must not exceed "
+            f"{MAX_CONFIGURABLE_OUTPUT_BYTES} bytes"
+        )
+    return value
+
+
+def _normalize_env(env: Mapping[str, str] | None) -> dict[str, str]:
+    if env is None:
+        return {}
+    if not isinstance(env, Mapping):
+        raise ValueError("env must be a mapping of variable names to values")
+    result: dict[str, str] = {}
+    for raw_key, raw_value in env.items():
+        key = str(raw_key)
+        value = str(raw_value)
+        if (
+            not key
+            or not (key[0].isalpha() or key[0] == "_")
+            or not all(ch.isascii() and (ch.isalnum() or ch == "_") for ch in key)
+        ):
+            raise ValueError(f"invalid environment variable name: {key!r}")
+        if "\x00" in value:
+            raise ValueError(f"environment variable {key!r} contains a NUL byte")
+        result[key] = value
+    return result
+
+
+def _format_argv(argv: Sequence[str], *, posix: bool) -> str:
+    values = [str(value) for value in argv]
+    return shlex.join(values) if posix else subprocess.list2cmdline(values)
 
 
 class BashError(Exception):
@@ -54,9 +85,7 @@ class BashResult:
     stderr_omitted_bytes: int = 0
     description: str = ""
     interpreter: str = DEFAULT_INTERPRETER
-    # User-supplied interpreter flags, excluding the injected command flag.
     flags: str = ""
-    # Effective interpreter invocation, including the injected command flag.
     invocation: str = ""
 
     @property
@@ -71,7 +100,7 @@ class BashResult:
         return self.stdout_omitted_bytes > 0 or self.stderr_omitted_bytes > 0
 
     def format(self, *, max_chars: int = MAX_OUTPUT_CHARS) -> str:
-        """Return a compact, bounded, model-facing representation."""
+        """Return a compact, bounded representation."""
         header_bits = [
             f"exit: {self.exit_code}",
             f"cwd: {self.cwd}",
@@ -123,7 +152,7 @@ class BashResult:
         return self.format()
 
 
-def bash(
+async def bash(
     command: str,
     *,
     cwd: str | os.PathLike[str],
@@ -166,16 +195,16 @@ def bash(
         max_output_bytes: Per-stream retained-output limit in bytes. Defaults
             to 1 MiB and may not exceed 16 MiB. Excess output is still drained
             to avoid blocking but only its beginning and end are retained.
-        client: Existing local or SSH client. When omitted, use the cached
-            local client rooted at the process working directory.
+        client: Existing local or SSH client. When omitted, create a local
+            client rooted at the process working directory.
 
     Returns:
         A :class:`BashResult` containing exit status, captured stdout/stderr,
         resolved cwd, duration, timeout state, and invocation metadata.
         Command capture is bounded while the process runs; total and omitted
         byte counts remain available on the result. ``BashResult.format()``
-        applies a second model-facing cap of 100,000 characters while retaining
-        both its beginning and end.
+        applies a second 100,000-character cap while retaining both its
+        beginning and end.
 
     Raises:
         BashError: If arguments are invalid or command execution cannot start.
@@ -227,11 +256,11 @@ def bash(
     except (TypeError, ValueError) as exc:
         raise BashError(f"invalid interpreter flags: {exc}") from exc
     try:
-        output_limit = validate_max_output_bytes(max_output_bytes)
+        output_limit = _validate_max_output_bytes(max_output_bytes)
     except ValueError as exc:
         raise BashError(str(exc)) from exc
     try:
-        normalized_env = normalize_env(env)
+        normalized_env = _normalize_env(env)
     except ValueError as exc:
         raise BashError(str(exc)) from exc
     if stdin is not None:
@@ -243,12 +272,12 @@ def bash(
             raise BashError("stdin must be valid UTF-8 text") from exc
 
     effective_flags = inject_cmd_flag(interp, flag_list)
-    flags_display = format_argv(flag_list, posix=posix_target)
-    invocation = format_argv([interp, *effective_flags], posix=posix_target)
+    flags_display = _format_argv(flag_list, posix=posix_target)
+    invocation = _format_argv([interp, *effective_flags], posix=posix_target)
     c = _resolve_client(client)
 
     try:
-        result: CommandResult = c.exec_command(
+        result: CommandResult = await c.exec_command(
             command,
             cwd=workdir,
             timeout=effective_timeout,

@@ -2,7 +2,7 @@
 name = "file_tools_core"
 version = "0.1.0"
 edition = "2021"
-description = "High-speed string operators for file-tools (edit/read/patch)"
+description = "Native filesystem, SSH, command, and string core for file-tools"
 license = "MIT"
 
 [lib]
@@ -11,7 +11,10 @@ crate-type = ["cdylib"]
 path = "src/core-rs/lib.rs"
 
 [dependencies]
+libc = "0.2"
 pyo3 = { version = "0.25" }
+shell-words = "1.1"
+tempfile = "3.20"
 
 [features]
 # Keep Rust unit tests linkable on every OS. Maturin explicitly enables the

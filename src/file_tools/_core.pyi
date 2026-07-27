@@ -1,14 +1,130 @@
-"""Type stubs for the Rust extension module ``file_tools._core``.
-
-High-speed string operators (no I/O). Built via maturin / pyo3.
-"""
+"""Native local/SSH clients and text-processing primitives."""
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# edit
-# ---------------------------------------------------------------------------
+from collections.abc import Mapping, Sequence
+from os import PathLike
+from typing import TypeAlias
 
+class ClientError(Exception): ...
+class IncorrectPasswordError(Exception): ...
+
+class CommandResult:
+    @property
+    def exit_code(self) -> int: ...
+    @property
+    def stdout(self) -> str: ...
+    @property
+    def stderr(self) -> str: ...
+    @property
+    def command(self) -> str: ...
+    @property
+    def cwd(self) -> str: ...
+    @property
+    def duration_ms(self) -> int: ...
+    @property
+    def timed_out(self) -> bool: ...
+    @property
+    def signal(self) -> int | None: ...
+    @property
+    def stdout_total_bytes(self) -> int: ...
+    @property
+    def stderr_total_bytes(self) -> int: ...
+    @property
+    def stdout_omitted_bytes(self) -> int: ...
+    @property
+    def stderr_omitted_bytes(self) -> int: ...
+    @property
+    def extras(self) -> dict[str, str]: ...
+    @property
+    def ok(self) -> bool: ...
+    @property
+    def truncated(self) -> bool: ...
+    def __bool__(self) -> bool: ...
+
+class LocalClient:
+    kind: str
+    def __init__(self, cwd: str | PathLike[str] | None = None) -> None: ...
+    @property
+    def cwd(self) -> str: ...
+    def resolve(self, path: str) -> str: ...
+    def exists(self, path: str) -> bool: ...
+    def is_file(self, path: str) -> bool: ...
+    def is_dir(self, path: str) -> bool: ...
+    def read_text(self, path: str, *, encoding: str = "utf-8") -> str: ...
+    def read_bytes(self, path: str) -> bytes: ...
+    def write_text(
+        self, path: str, content: str, *, encoding: str = "utf-8"
+    ) -> None: ...
+    def write_bytes(self, path: str, data: bytes) -> None: ...
+    def mkdir(
+        self, path: str, *, parents: bool = True, exist_ok: bool = True
+    ) -> None: ...
+    def delete(self, path: str) -> None: ...
+    def join(self, *parts: str) -> str: ...
+    def exec_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: str | None = None,
+        interpreter: str | None = None,
+        flags: str | Sequence[str] | None = None,
+        max_output_bytes: int = 1024 * 1024,
+    ) -> CommandResult: ...
+class SshClient:
+    kind: str
+    def __init__(
+        self,
+        host: str,
+        *,
+        port: int,
+        username: str,
+        password: str | None = None,
+        key_filename: str | None = None,
+        cwd: str = ".",
+        connect_timeout: float = 30.0,
+        ssh_flags: str | Sequence[str] | None = None,
+        allow_password_prompt: bool = True,
+        accept_unknown_host_key: bool = False,
+    ) -> None: ...
+    @property
+    def cwd(self) -> str: ...
+    def resolve(self, path: str) -> str: ...
+    def exists(self, path: str) -> bool: ...
+    def is_file(self, path: str) -> bool: ...
+    def is_dir(self, path: str) -> bool: ...
+    def read_text(self, path: str, *, encoding: str = "utf-8") -> str: ...
+    def read_bytes(self, path: str) -> bytes: ...
+    def write_text(
+        self, path: str, content: str, *, encoding: str = "utf-8"
+    ) -> None: ...
+    def write_bytes(self, path: str, data: bytes) -> None: ...
+    def mkdir(
+        self, path: str, *, parents: bool = True, exist_ok: bool = True
+    ) -> None: ...
+    def delete(self, path: str) -> None: ...
+    def join(self, *parts: str) -> str: ...
+    def exec_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env: Mapping[str, str] | None = None,
+        stdin: str | None = None,
+        interpreter: str | None = None,
+        flags: str | Sequence[str] | None = None,
+        max_output_bytes: int = 1024 * 1024,
+    ) -> CommandResult: ...
+Client: TypeAlias = LocalClient | SshClient
+
+def normalize_flags(
+    flags: str | Sequence[str] | None = None, *, posix: bool | None = None
+) -> list[str]: ...
+def inject_cmd_flag(interpreter: str, flags: list[str]) -> list[str]: ...
 def find_matches(text: str, pattern: str) -> list[tuple[int, int]]:
     """Find all matches as ``(byte_start, byte_len)`` pairs.
 
@@ -37,10 +153,6 @@ def edit_text(
     """
     ...
 
-# ---------------------------------------------------------------------------
-# read
-# ---------------------------------------------------------------------------
-
 def count_lines(text: str) -> int:
     """Count lines (non-empty file without trailing newline still counts last line)."""
     ...
@@ -64,7 +176,7 @@ def prepare_read(
     limit: int,
     show_line_numbers: bool = True,
 ) -> tuple[str, int, int, int, bool, list[str]]:
-    """Agent read pipeline.
+    """Prepare a bounded line window.
 
     Parameters
     ----------
@@ -79,17 +191,13 @@ def prepare_read(
     """
     ...
 
-# ---------------------------------------------------------------------------
-# patch
-# ---------------------------------------------------------------------------
-
 def seek_sequence(
     lines: list[str],
     pattern: list[str],
     start: int = 0,
     eof: bool = False,
 ) -> int | None:
-    """Four-tier fuzzy line-sequence search (codex seek_sequence)."""
+    """Search for a line sequence with progressively relaxed normalization."""
     ...
 
 def apply_line_replacements(

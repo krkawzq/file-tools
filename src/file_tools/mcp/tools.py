@@ -42,7 +42,7 @@ def _client(
     ssh_accept_unknown_host_key: bool = False,
 ):
     return _get_client(
-        client=client or "local",
+        client=client,
         cwd=cwd,
         ssh_host=ssh_host,
         ssh_port=ssh_port,

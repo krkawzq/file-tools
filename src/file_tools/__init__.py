@@ -1,4 +1,4 @@
-"""file-tools: five agent tools with pluggable clients and a Rust string core."""
+"""Local and SSH-backed file tools."""
 
 from .client import (
     Client,

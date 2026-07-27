@@ -1,4 +1,4 @@
 interface:
   display_name: "File Tools"
-  short_description: "Operate local and SSH files through MCP"
-  default_prompt: "Use $file-tools to inspect and update files in an explicit workspace."
+  short_description: "Operate local and SSH workspaces through MCP"
+  default_prompt: "Use $file-tools to inspect and safely update files in an explicit local or SSH workspace."

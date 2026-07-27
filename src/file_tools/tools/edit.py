@@ -1,10 +1,4 @@
-"""Edit tool — Claude Code style old/new string replace via Client + Rust kernel.
-
-- ``old_string`` empty: create a new file; existing targets are rejected.
-- ``prepend=True``: explicitly prepend to an existing file.
-- Matching: exact, then per-line rstrip (Rust).
-- Writes the literal edit result without adding a trailing newline.
-"""
+"""Deterministic text replacement, file creation, and prepending."""
 
 from __future__ import annotations
 
@@ -12,31 +6,38 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .. import _core
-from ..client import Client, ClientError, resolve_client as _resolve_client
+from ..client import (
+    Client,
+    ClientError,
+    resolve_client as _resolve_client,
+    run_blocking,
+)
 
 
 class EditError(Exception):
-    """Edit tool base error."""
+    """Base error raised while editing a file."""
 
 
 class EditFileNotFoundError(EditError):
-    """File missing and cannot be created."""
+    """Raised when an operation requires an existing file."""
 
 
 class EditFileExistsError(EditError):
-    """Create-on-empty targeted an existing file."""
+    """Raised when file creation targets an existing path."""
 
 
 class EditStringNotFoundError(EditError):
-    """old_string not found."""
+    """Raised when ``old_string`` cannot be matched."""
 
 
 class EditAmbiguousMatchError(EditError):
-    """old_string matches more than once without replace_all."""
+    """Raised when a replacement is ambiguous."""
 
 
 @dataclass
 class EditResult:
+    """Resolved path and edit operation summary."""
+
     file_path: str
     replacements: int
     is_new_file: bool = False
@@ -46,14 +47,13 @@ class EditResult:
         return self.replacements > 0 or self.operation in {"created", "prepended"}
 
 
-def edit(
+async def edit(
     file_path: str,
     old_string: str,
     new_string: str,
     *,
     replace_all: bool = False,
     prepend: bool = False,
-    allow_empty_file: bool = True,
     encoding: str = "utf-8",
     client: Client | None = None,
 ) -> EditResult:
@@ -66,11 +66,11 @@ def edit(
     location. Set ``replace_all`` only when every non-overlapping occurrence is
     intended to change.
 
-    An empty ``old_string`` means create a new file (including parent
-    directories) when ``allow_empty_file`` is true. If the target already
-    exists, creation fails instead of overwriting or silently prepending.
-    Prepending is a separate explicit operation: set ``prepend=True`` together
-    with an empty ``old_string``; the target must already exist.
+    An empty ``old_string`` means create a new file, including its parent
+    directories. If the target already exists, creation fails instead of
+    overwriting or silently prepending. Prepending is a separate explicit
+    operation: set ``prepend=True`` together with an empty ``old_string``; the
+    target must already exist.
     ``append`` is not a mode of this tool. To append lines, use
     :func:`apply_patch` with an ``Update File`` hunk containing a bare ``@@``
     and only ``+`` lines; an add-only chunk without named context inserts at
@@ -91,11 +91,9 @@ def edit(
         replace_all: Replace all matches instead of requiring uniqueness.
         prepend: Explicitly prepend ``new_string`` to an existing file.
             Requires an empty ``old_string``. Defaults to false.
-        allow_empty_file: Permit an empty ``old_string`` to create a missing
-            file. Defaults to true.
         encoding: Text encoding used for reading and writing. Defaults to UTF-8.
-        client: Existing local or SSH client. When omitted, use the cached
-            local client rooted at the process working directory.
+        client: Existing local or SSH client. When omitted, create a local
+            client rooted at the process working directory.
 
     Returns:
         An :class:`EditResult` with the resolved path, operation
@@ -106,7 +104,7 @@ def edit(
         ValueError: If ``prepend=True`` is combined with a non-empty
             ``old_string`` or with ``replace_all=True``.
         EditFileNotFoundError: If a non-empty match targets a missing file, or
-            create-on-empty is disabled, or prepend targets a missing file.
+            prepend targets a missing file.
         EditFileExistsError: If create-on-empty targets an existing file.
         EditStringNotFoundError: If ``old_string`` does not match.
         EditAmbiguousMatchError: If multiple matches exist and
@@ -114,7 +112,7 @@ def edit(
         EditError: If the path is not a regular file or I/O fails.
     """
     c = _resolve_client(client)
-    path = c.resolve(file_path)
+    path = await c.resolve(file_path)
 
     if prepend and old_string != "":
         raise ValueError("prepend=True 要求 old_string 为空字符串")
@@ -122,18 +120,18 @@ def edit(
         raise ValueError("prepend=True 与 replace_all=True 不能同时使用")
 
     if old_string == "":
-        if c.exists(path):
+        if await c.exists(path):
             if not prepend:
                 raise EditFileExistsError(
                     f"文件已存在，old_string 为空时只允许创建新文件: {path}\n"
                     "提示: 如需在现有文件开头插入内容，请显式设置 prepend=True。"
                 )
-            if c.is_dir(path):
+            if await c.is_dir(path):
                 raise EditError(f"路径是目录: {path}")
-            if not c.is_file(path):
+            if not await c.is_file(path):
                 raise EditError(f"路径不是普通文件: {path}")
             try:
-                content = c.read_text(path, encoding=encoding)
+                content = await c.read_text(path, encoding=encoding)
             except ClientError as e:
                 raise EditError(str(e)) from e
             line_ending = "\r\n" if "\r\n" in content else "\n"
@@ -142,7 +140,7 @@ def edit(
                 prefix = prefix.replace("\r\n", "\n").replace("\n", "\r\n")
             new_content = prefix + content
             try:
-                c.write_text(path, new_content, encoding=encoding)
+                await c.write_text(path, new_content, encoding=encoding)
             except ClientError as e:
                 raise EditError(str(e)) from e
             return EditResult(
@@ -153,12 +151,8 @@ def edit(
             )
         if prepend:
             raise EditFileNotFoundError(f"prepend=True 需要已存在的文件: {path}")
-        if not allow_empty_file:
-            raise EditFileNotFoundError(
-                f"文件不存在且 old_str 为空但 allow_empty_file=False: {path}"
-            )
         try:
-            c.write_text(path, new_string, encoding=encoding)
+            await c.write_text(path, new_string, encoding=encoding)
         except ClientError as e:
             raise EditError(str(e)) from e
         return EditResult(
@@ -168,22 +162,26 @@ def edit(
             operation="created",
         )
 
-    if not c.exists(path):
+    if not await c.exists(path):
         raise EditFileNotFoundError(
             f"文件不存在: {path}\n"
             f"提示: 如果要在新文件中写入内容，请将 old_string 设为空字符串。"
         )
-    if not c.is_file(path):
+    if not await c.is_file(path):
         raise EditError(f"路径不是普通文件: {path}")
 
     try:
-        content = c.read_text(path, encoding=encoding)
+        content = await c.read_text(path, encoding=encoding)
     except ClientError as e:
         raise EditError(str(e)) from e
 
     try:
-        new_content, count = _core.edit_text(
-            content, old_string, new_string, replace_all
+        new_content, count = await run_blocking(
+            _core.edit_text,
+            content,
+            old_string,
+            new_string,
+            replace_all,
         )
     except ValueError as e:
         msg = str(e)
@@ -195,7 +193,7 @@ def edit(
                 f"{content[:500]}{'...' if len(content) > 500 else ''}"
             ) from e
         if msg.startswith("AMBIGUOUS:"):
-            matches = _core.find_matches(content, old_string)
+            matches = await run_blocking(_core.find_matches, content, old_string)
             raw = content.encode("utf-8")
             context_lines = []
             for i, (pos, mlen) in enumerate(matches[:5]):
@@ -219,7 +217,7 @@ def edit(
         raise EditError(msg) from e
 
     try:
-        c.write_text(path, new_content, encoding=encoding)
+        await c.write_text(path, new_content, encoding=encoding)
     except ClientError as e:
         raise EditError(str(e)) from e
 

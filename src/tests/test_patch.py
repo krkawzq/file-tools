@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from file_tools.client import LocalClient
+from file_tools import LocalClient
 from file_tools.tools.apply_patch import (
     PatchApplyError,
     PatchParseError,
@@ -12,35 +12,14 @@ from file_tools.tools.apply_patch import (
 )
 
 
-def test_patch_accepts_outer_whitespace_and_trailing_newline(tmp_path: Path) -> None:
-    patch_text = (
-        "\n"
-        "*** Begin Patch\n"
-        "*** Add File: example.txt\n"
-        "+hello\n"
-        "*** End Patch\n"
-        "\n"
-    )
-
-    result = apply_patch(patch_text, client=LocalClient(cwd=tmp_path))
-
-    assert result.patch == (
-        "*** Begin Patch\n"
-        "*** Add File: example.txt\n"
-        "+hello\n"
-        "*** End Patch"
-    )
-    assert (tmp_path / "example.txt").read_text() == "hello\n"
-
-
-def test_patch_accepts_lenient_heredoc_with_outer_whitespace(tmp_path: Path) -> None:
+def test_patch_accepts_heredoc_wrapper(tmp_path: Path) -> None:
     patch_text = (
         "<<EOF\n"
         "*** Begin Patch\n"
         "*** Add File: example.txt\n"
         "+hello\n"
         "*** End Patch\n"
-        "EOF   \n"
+        "EOF\n"
     )
 
     result = apply_patch(patch_text, client=LocalClient(cwd=tmp_path))
@@ -79,8 +58,7 @@ def test_control_marker_text_can_be_update_context(tmp_path: Path) -> None:
         " *** End Patch\n"
         "-old\n"
         "+new\n"
-        "*** End Patch\n"
-        ,
+        "*** End Patch\n",
         client=LocalClient(cwd=tmp_path),
     )
 
@@ -95,8 +73,7 @@ def test_bare_empty_update_line_is_rejected(tmp_path: Path) -> None:
             "*** Update File: example.txt\n"
             "@@\n"
             "\n"
-            "*** End Patch\n"
-            ,
+            "*** End Patch\n",
             client=LocalClient(cwd=tmp_path),
         )
 

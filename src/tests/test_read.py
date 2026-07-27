@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from file_tools.client import LocalClient
+from file_tools import LocalClient
 from file_tools.tools.read import (
     ReadError,
     ReadEmptyFileError,

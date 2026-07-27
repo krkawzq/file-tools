@@ -1,19 +1,19 @@
 import os
-import posixpath
 import signal
 import shutil
-import subprocess
-import stat
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from file_tools.client import LocalClient, clear_client_cache, get_client, resolve_client
-from file_tools.client.base import ClientError
-from file_tools.client.ssh import SshClient
+from file_tools import (
+    ClientError,
+    LocalClient,
+    SshClient,
+    get_client,
+    resolve_client,
+)
 
 
 def test_local_client_exec_command(tmp_path: Path) -> None:
@@ -153,7 +153,6 @@ def test_exec_command_interpreter_and_flags(tmp_path: Path) -> None:
     if shutil.which("bash") is None:
         pytest.skip("bash is not installed")
     c = LocalClient(cwd=tmp_path)
-    # bash -lc 'echo $0' → prints bash
     r = c.exec_command("echo hi-from-bash", interpreter="bash", flags="-lc")
     assert r.ok
     assert "hi-from-bash" in r.stdout
@@ -171,7 +170,7 @@ def test_exec_command_flags_as_list(tmp_path: Path) -> None:
 
 
 def test_normalize_flags() -> None:
-    from file_tools.client import normalize_flags
+    from file_tools._core import normalize_flags
 
     assert normalize_flags(None) == []
     assert normalize_flags("") == []
@@ -184,11 +183,10 @@ def test_normalize_flags() -> None:
     ]
 
 
-def test_get_client_defaults_local(tmp_path: Path) -> None:
-    clear_client_cache()
+def test_get_client_creates_fresh_local_clients(tmp_path: Path) -> None:
     a = get_client(client="local", cwd=str(tmp_path))
     b = get_client(client="local", cwd=str(tmp_path))
-    assert a is b  # LRU cache hit
+    assert a is not b
     assert a.kind == "local"
     assert Path(a.cwd) == tmp_path.resolve()
 
@@ -199,14 +197,12 @@ def test_resolve_prefers_explicit_client(tmp_path: Path) -> None:
     assert got is explicit
 
 
-def test_unknown_client_type() -> None:
-    clear_client_cache()
+def test_unknown_client_kind() -> None:
     with pytest.raises(ValueError, match="unknown client"):
         get_client(client="ftp")
 
 
 def test_ssh_requires_host_port_user() -> None:
-    clear_client_cache()
     with pytest.raises(ValueError, match="ssh_host is required"):
         get_client(client="ssh", cwd="/tmp", ssh_port=22, ssh_user="u")
     with pytest.raises(ValueError, match="ssh_port is required"):
@@ -215,269 +211,52 @@ def test_ssh_requires_host_port_user() -> None:
         get_client(client="ssh", cwd="/tmp", ssh_host="h", ssh_port=22)
 
 
+def test_python_client_wraps_native_implementations() -> None:
+    import file_tools._core as native
+
+    assert LocalClient is native.LocalClient
+    assert LocalClient.__module__ == "file_tools._core"
 
 
-class _FakeSftp:
-    def __init__(self) -> None:
-        self.directories = {"/", "/home", "/home/user"}
-
-    def mkdir(self, path: str) -> None:
-        if path in self.directories:
-            raise OSError("already exists")
-        parent = posixpath.dirname(path)
-        if parent not in self.directories:
-            raise OSError("parent missing")
-        self.directories.add(path)
-
-    def stat(self, path: str) -> SimpleNamespace:
-        if path not in self.directories:
-            raise OSError("not found")
-        return SimpleNamespace(st_mode=stat.S_IFDIR)
-
-
-def test_ssh_mkdir_allows_existing_parents_when_exist_ok_is_false() -> None:
-    client = SshClient.__new__(SshClient)
-    client._cwd = "/home/user"
-    client._home = "/home/user"
-    client._sftp = _FakeSftp()
-
-    client.mkdir("nested/leaf", parents=True, exist_ok=False)
-    assert "/home/user/nested/leaf" in client._sftp.directories
-
-    with pytest.raises(ClientError, match="SSH mkdir failed"):
-        client.mkdir("nested/leaf", parents=True, exist_ok=False)
-
-
-def test_ssh_mkdir_does_not_hide_real_errors_when_exist_ok_is_true() -> None:
-    class FailingSftp(_FakeSftp):
-        def mkdir(self, path: str) -> None:
-            if path == "/home/user/blocked":
-                raise OSError("permission denied")
-            super().mkdir(path)
-
-    client = SshClient.__new__(SshClient)
-    client._cwd = "/home/user"
-    client._home = "/home/user"
-    client._sftp = FailingSftp()
-
-    with pytest.raises(ClientError, match="permission denied"):
-        client.mkdir("blocked", parents=True, exist_ok=True)
-
-
-def test_ssh_text_encoding_errors_are_wrapped() -> None:
-    client = SshClient.__new__(SshClient)
-
-    with pytest.raises(ClientError, match="SSH write_text failed"):
-        client.write_text("ignored", "content", encoding="not-an-encoding")
-
-
-def test_ssh_resolve_expands_home() -> None:
-    client = SshClient.__new__(SshClient)
-    client._cwd = "/work/project"
-    client._home = "/home/user"
-
-    assert client.resolve("~") == "/home/user"
-    assert client.resolve("~/data/file.txt") == "/home/user/data/file.txt"
-
-
-class _FakeChannel:
-    def __init__(
-        self,
-        *,
-        exits: bool = True,
-        stdout: bytes = b"",
-        stderr: bytes = b"",
-    ) -> None:
-        self.command = ""
-        self.stdin_closed = False
-        self.closed = False
-        self.eof_received = exits
-        self._exits = exits
-        self.stdout = bytearray(stdout)
-        self.stderr = bytearray(stderr)
-
-    def settimeout(self, timeout: float | None) -> None:
-        self.timeout = timeout
-
-    def exec_command(self, command: str) -> None:
-        self.command = command
-
-    def sendall(self, data: bytes) -> None:
-        self.stdin = data
-
-    def shutdown_write(self) -> None:
-        self.stdin_closed = True
-
-    def recv_ready(self) -> bool:
-        return bool(self.stdout)
-
-    def recv_stderr_ready(self) -> bool:
-        return bool(self.stderr)
-
-    def recv(self, size: int) -> bytes:
-        data = bytes(self.stdout[:size])
-        del self.stdout[:size]
-        return data
-
-    def recv_stderr(self, size: int) -> bytes:
-        data = bytes(self.stderr[:size])
-        del self.stderr[:size]
-        return data
-
-    def exit_status_ready(self) -> bool:
-        return self._exits
-
-    def recv_exit_status(self) -> int:
-        return 0
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _DelayedOutputChannel(_FakeChannel):
-    """Expose output only after exit status has already become ready."""
-
-    def __init__(self, *, stdout: bytes, stderr: bytes) -> None:
-        super().__init__(exits=True)
-        # Reproduce Paramiko publishing exit/EOF state before its transport
-        # thread makes the final data packets visible to recv_ready().
-        self.eof_received = True
-        self._pending_stdout = stdout
-        self._pending_stderr = stderr
-        self._stdout_ready_polls = 0
-
-    def recv_ready(self) -> bool:
-        self._stdout_ready_polls += 1
-        if self._stdout_ready_polls == 3:
-            self.stdout.extend(self._pending_stdout)
-            self.stderr.extend(self._pending_stderr)
-            self.eof_received = True
-        return super().recv_ready()
-
-
-class _FakeTransport:
-    def __init__(self, channel: _FakeChannel) -> None:
-        self.channel = channel
-
-    def open_session(self, timeout: float | None = None) -> _FakeChannel:
-        return self.channel
-
-
-class _FakeSshConnection:
-    def __init__(self, channel: _FakeChannel) -> None:
-        self.transport = _FakeTransport(channel)
-
-    def get_transport(self) -> _FakeTransport:
-        return self.transport
-
-
-def _fake_ssh_exec_client(channel: _FakeChannel) -> SshClient:
-    client = SshClient.__new__(SshClient)
-    client._cwd = "/work/project"
-    client._home = "/home/user"
-    client._client = _FakeSshConnection(channel)
-    client._enable_x11 = False
-    return client
-
-
-def test_ssh_exec_injects_command_flag_and_closes_stdin() -> None:
-    channel = _FakeChannel()
-    client = _fake_ssh_exec_client(channel)
-
-    result = client.exec_command("printf remote-ok", interpreter="bash", flags="-l")
-
-    assert result.ok
-    assert "setsid" in channel.command
-    assert "printf remote-ok" in channel.command
-    assert result.extras["flags"] == "-l -c"
-    assert channel.stdin_closed
-
-
-def test_ssh_exec_enforces_timeout_without_channel_output() -> None:
-    channel = _FakeChannel(exits=False)
-    client = _fake_ssh_exec_client(channel)
-
-    result = client.exec_command("sleep forever", timeout=0.02)
-
-    assert result.timed_out
-    assert result.exit_code == 124
-    assert channel.closed
-
-
-def test_ssh_exec_bounds_output() -> None:
-    channel = _FakeChannel(stdout=b"a" * 5000, stderr=b"b" * 5000)
-    client = _fake_ssh_exec_client(channel)
-
-    result = client.exec_command("produce-output", max_output_bytes=128)
-
-    assert result.truncated
-    assert result.stdout_total_bytes == 5000
-    assert result.stderr_total_bytes == 5000
-    assert result.stdout_omitted_bytes == 5000 - 128
-    assert result.stderr_omitted_bytes == 5000 - 128
-    assert result.stdout.startswith("a" * 64)
-    assert result.stdout.endswith("a" * 64)
-    assert result.stderr.startswith("b" * 64)
-    assert result.stderr.endswith("b" * 64)
-
-
-def test_ssh_exec_drains_output_that_arrives_after_exit_status() -> None:
-    channel = _DelayedOutputChannel(
-        stdout=b"late stdout\n",
-        stderr=b"late stderr\n",
-    )
-    client = _fake_ssh_exec_client(channel)
-
-    result = client.exec_command("fast-command")
-
-    assert result.ok
-    assert result.stdout == "late stdout\n"
-    assert result.stderr == "late stderr\n"
-    assert result.stdout_total_bytes == len(b"late stdout\n")
-    assert result.stderr_total_bytes == len(b"late stderr\n")
-
-
-def test_ssh_wrapper_command_executes_with_expected_shell_semantics(
+@pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
+def test_native_ssh_runner_preserves_exit_and_kills_timeout_tree(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    if os.name == "nt" or shutil.which("sh") is None:
-        pytest.skip("requires a local POSIX shell to validate the SSH wrapper")
-    channel = _FakeChannel()
-    client = _fake_ssh_exec_client(channel)
-    client._cwd = str(tmp_path)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text(
+        "#!/bin/sh\n"
+        "for arg in \"$@\"; do remote=$arg; done\n"
+        "exec /bin/sh -c \"$remote\"\n"
+    )
+    fake_ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
-    client.exec_command(
-        "printf '%s' \"$FT_REMOTE_TEST\"",
+    client = SshClient(
+        "fake-host",
+        port=22,
+        username="test-user",
+        cwd=str(tmp_path),
+        allow_password_prompt=False,
+    )
+    nonzero = client.exec_command(
+        "printf 'out\\n'; printf 'err\\n' >&2; exit 7",
         interpreter="bash",
-        env={"FT_REMOTE_TEST": "remote-ok"},
     )
-    completed = subprocess.run(
-        ["sh", "-c", channel.command],
-        capture_output=True,
-        check=False,
+    assert nonzero.exit_code == 7
+    assert not nonzero.timed_out
+    assert nonzero.stdout == "out\n"
+    assert nonzero.stderr == "err\n"
+
+    marker = tmp_path / "late-marker"
+    timed = client.exec_command(
+        f"(sleep 2; printf late > {marker}) & wait",
+        interpreter="bash",
+        timeout=0.5,
     )
-
-    assert completed.returncode == 0
-    assert completed.stdout == b"remote-ok"
-    assert b"__FILE_TOOLS_" in completed.stderr
-
-
-def test_ssh_wrapper_flush_grace_preserves_explicit_exit_status(
-    tmp_path: Path,
-) -> None:
-    if os.name == "nt" or shutil.which("sh") is None:
-        pytest.skip("requires a local POSIX shell to validate the SSH wrapper")
-    channel = _FakeChannel()
-    client = _fake_ssh_exec_client(channel)
-    client._cwd = str(tmp_path)
-
-    client.exec_command("printf 'tail-error' >&2; exit 7")
-    completed = subprocess.run(
-        ["sh", "-c", channel.command],
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 7
-    assert b"tail-error" in completed.stderr
-    assert "sleep 0.01" in channel.command
+    assert timed.exit_code == 124
+    assert timed.timed_out
+    time.sleep(2.1)
+    assert not marker.exists()

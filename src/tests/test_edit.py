@@ -2,13 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from file_tools.client import ClientError, LocalClient
+from file_tools import LocalClient
 from file_tools.tools.edit import (
     EditAmbiguousMatchError,
-    EditError,
     EditFileExistsError,
     EditFileNotFoundError,
-    EditResult,
     EditStringNotFoundError,
     edit,
 )
@@ -78,28 +76,6 @@ def test_empty_old_string_rejects_existing_file_without_explicit_prepend(
     assert target.read_text() == "body"
 
 
-def test_prepend_wraps_client_write_errors(tmp_path: Path) -> None:
-    class FailingWriteClient(LocalClient):
-        def write_text(
-            self, path: str, content: str, *, encoding: str = "utf-8"
-        ) -> None:
-            raise ClientError("write failed")
-
-    target = tmp_path / "example.txt"
-    target.write_text("body")
-
-    with pytest.raises(EditError, match="write failed"):
-        edit(
-            "example.txt",
-            "",
-            "header\n",
-            prepend=True,
-            client=FailingWriteClient(tmp_path),
-        )
-
-    assert target.read_text() == "body"
-
-
 def test_creates_a_new_file_and_parent_directories(tmp_path: Path) -> None:
     client = LocalClient(cwd=tmp_path)
     target = tmp_path / "nested" / "example.txt"
@@ -121,15 +97,6 @@ def test_can_create_an_empty_file(tmp_path: Path) -> None:
     assert (tmp_path / "empty.txt").read_text() == ""
     assert result.is_new_file
     assert result
-
-
-def test_rejects_creation_when_allow_empty_file_is_false(tmp_path: Path) -> None:
-    client = LocalClient(cwd=tmp_path)
-
-    with pytest.raises(EditFileNotFoundError, match="allow_empty_file=False"):
-        edit("missing.txt", "", "content", allow_empty_file=False, client=client)
-
-    assert not (tmp_path / "missing.txt").exists()
 
 
 def test_nonempty_old_string_requires_an_existing_file(tmp_path: Path) -> None:

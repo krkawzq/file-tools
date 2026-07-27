@@ -1,4 +1,4 @@
-"""Allow ``python -m file_tools.cli`` execution."""
+"""CLI module entry point."""
 
 from .main import main
 

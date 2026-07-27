@@ -1,18 +1,21 @@
-//! High-speed string operators for `file-tools`.
-//!
-//! Algorithms ported/adapted from:
-//! - codex-rs `apply-patch` (seek_sequence, replacements)
-//! - grok-build `codex/apply_patch` + `search_replace` helpers
-//! - Claude Code style exact + rstrip edit matching
+//! Native filesystem, SSH, command, and text-processing primitives.
 
+mod client;
+mod command;
+mod constants;
 mod edit;
+mod local;
+mod output;
 mod patch;
 mod read;
+mod ssh;
 
 use pyo3::prelude::*;
 
 #[pymodule]
-fn _core(m: &Bound<PyModule>) -> PyResult<()> {
+fn _core(py: Python<'_>, m: &Bound<PyModule>) -> PyResult<()> {
+    client::register(py, m)?;
+
     m.add_function(wrap_pyfunction!(edit::find_matches, m)?)?;
     m.add_function(wrap_pyfunction!(edit::apply_replacements_text, m)?)?;
     m.add_function(wrap_pyfunction!(edit::edit_text, m)?)?;

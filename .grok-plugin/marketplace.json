@@ -1,0 +1,27 @@
+{
+  "name": "file-tools",
+  "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
+  "owner": {
+    "name": "wzq"
+  },
+  "plugins": [
+    {
+      "name": "file-tools",
+      "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
+      "category": "developer-tools",
+      "version": "0.1.0",
+      "homepage": "https://github.com/krkawzq/file-tools",
+      "keywords": [
+        "files",
+        "mcp",
+        "ssh",
+        "patching",
+        "developer-tools"
+      ],
+      "source": {
+        "source": "url",
+        "url": "https://github.com/krkawzq/file-tools.git"
+      }
+    }
+  ]
+}

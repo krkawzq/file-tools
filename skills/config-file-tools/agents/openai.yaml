@@ -1,0 +1,4 @@
+interface:
+  display_name: "Configure File Tools"
+  short_description: "Build and configure the File Tools MCP server"
+  default_prompt: "Use $config-file-tools to build, configure, diagnose, and verify File Tools."
