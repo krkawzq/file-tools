@@ -10,13 +10,11 @@ use std::path::Path;
 use std::time::Duration;
 
 create_exception!(_core, ClientError, PyException);
-create_exception!(_core, IncorrectPasswordError, PyException);
 
 #[derive(Debug)]
 pub enum CoreError {
     Client(String),
     Value(String),
-    IncorrectPassword(String),
 }
 
 impl CoreError {
@@ -24,7 +22,6 @@ impl CoreError {
         match self {
             Self::Client(message) => ClientError::new_err(message),
             Self::Value(message) => PyValueError::new_err(message),
-            Self::IncorrectPassword(message) => IncorrectPasswordError::new_err(message),
         }
     }
 }
@@ -380,10 +377,6 @@ pub fn decode_text(
 
 pub fn register(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("ClientError", py.get_type::<ClientError>())?;
-    module.add(
-        "IncorrectPasswordError",
-        py.get_type::<IncorrectPasswordError>(),
-    )?;
     module.add_class::<CommandResult>()?;
     module.add_class::<LocalClient>()?;
     module.add_class::<SshClient>()?;

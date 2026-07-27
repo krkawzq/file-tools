@@ -20,6 +20,16 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn shell_quote_path(value: &str) -> String {
+    if value == "~" {
+        return "\"$HOME\"".to_string();
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        return format!("\"$HOME\"/{}", shell_quote(rest));
+    }
+    shell_quote(value)
+}
+
 fn control_token() -> String {
     let sequence = TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
     let nanos = SystemTime::now()
@@ -206,38 +216,9 @@ impl SshClient {
             allow_password_prompt,
             accept_unknown_host_key,
             connect_timeout,
-            home: ".".to_string(),
-            cwd: ".".to_string(),
+            home: "~".to_string(),
+            cwd: "~".to_string(),
         };
-        let probe = client.run_ssh(
-            "pwd",
-            None,
-            Some(Duration::from_secs_f64(connect_timeout)),
-            8192,
-        )?;
-        if probe.exit_code != 0 {
-            let message = String::from_utf8_lossy(&probe.stderr).trim().to_string();
-            if message.to_ascii_lowercase().contains("permission denied") {
-                return Err(CoreError::IncorrectPassword(format!(
-                    "SSH authentication failed for {}@{}{}",
-                    client.username,
-                    client.host,
-                    if client.password.is_some() {
-                        " (incorrect password)"
-                    } else {
-                        ""
-                    }
-                )));
-            }
-            return Err(CoreError::Client(format!("SSH connect failed: {message}")));
-        }
-        let home = String::from_utf8_lossy(&probe.stdout).trim().to_string();
-        if !home.starts_with('/') {
-            return Err(CoreError::Client(format!(
-                "SSH connect failed: remote pwd returned an invalid path: {home:?}"
-            )));
-        }
-        client.home = normalize_posix(&home);
         client.cwd = client.resolve_from_home(cwd);
         Ok(client)
     }
@@ -418,7 +399,7 @@ impl SshClient {
         self.checked_remote(
             "read_bytes",
             path,
-            &format!("cat -- {}", shell_quote(&resolved)),
+            &format!("cat -- {}", shell_quote_path(&resolved)),
             None,
         )
         .map(|output| output.stdout)
@@ -432,8 +413,8 @@ impl SshClient {
             .unwrap_or("/");
         let command = format!(
             "mkdir -p -- {} && cat > {}",
-            shell_quote(parent),
-            shell_quote(&resolved)
+            shell_quote_path(parent),
+            shell_quote_path(&resolved)
         );
         self.checked_remote("write_bytes", path, &command, Some(data))
             .map(|_| ())
@@ -504,35 +485,64 @@ impl SshClient {
         self.cwd.clone()
     }
 
-    fn resolve(&self, path: &str) -> String {
-        self.resolve_native(path)
+    fn resolve(&self, py: Python<'_>, path: &str) -> String {
+        py.allow_threads(|| self.resolve_native(path))
     }
 
     #[pyo3(signature = (*parts))]
-    fn join(&self, parts: &Bound<'_, PyTuple>) -> String {
+    fn join(&self, py: Python<'_>, parts: &Bound<'_, PyTuple>) -> String {
         let parts = parts
             .iter()
             .filter_map(|part| part.extract::<String>().ok())
             .collect::<Vec<_>>();
-        join_posix(&parts)
+        py.allow_threads(|| join_posix(&parts))
     }
 
     fn exists(&self, py: Python<'_>, path: &str) -> bool {
-        let command = format!("test -e {}", shell_quote(&self.resolve_native(path)));
+        let command = format!("test -e {}", shell_quote_path(&self.resolve_native(path)));
         py.allow_threads(|| self.run_ssh(&command, None, None, 8192))
             .is_ok_and(|output| output.exit_code == 0)
     }
 
     fn is_file(&self, py: Python<'_>, path: &str) -> bool {
-        let command = format!("test -f {}", shell_quote(&self.resolve_native(path)));
+        let command = format!("test -f {}", shell_quote_path(&self.resolve_native(path)));
         py.allow_threads(|| self.run_ssh(&command, None, None, 8192))
             .is_ok_and(|output| output.exit_code == 0)
     }
 
     fn is_dir(&self, py: Python<'_>, path: &str) -> bool {
-        let command = format!("test -d {}", shell_quote(&self.resolve_native(path)));
+        let command = format!("test -d {}", shell_quote_path(&self.resolve_native(path)));
         py.allow_threads(|| self.run_ssh(&command, None, None, 8192))
             .is_ok_and(|output| output.exit_code == 0)
+    }
+
+    fn path_info(&self, py: Python<'_>, path: &str) -> PyResult<(bool, bool, bool)> {
+        let path = shell_quote_path(&self.resolve_native(path));
+        let command = format!(
+            "if test -f {path}; then printf f; \
+             elif test -d {path}; then printf d; \
+             elif test -e {path}; then printf o; \
+             else printf n; fi"
+        );
+        let output = py
+            .allow_threads(|| self.run_ssh(&command, None, None, 8192))
+            .map_err(CoreError::into_pyerr)?;
+        if output.exit_code != 0 {
+            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(crate::client::ClientError::new_err(format!(
+                "SSH path_info failed: {path}: {message}"
+            )));
+        }
+        Ok(output
+            .stdout
+            .first()
+            .copied()
+            .map_or((false, false, false), |kind| match kind {
+                b'f' => (true, true, false),
+                b'd' => (true, false, true),
+                b'o' => (true, false, false),
+                _ => (false, false, false),
+            }))
     }
 
     fn read_bytes(&self, py: Python<'_>, path: &str) -> PyResult<Vec<u8>> {
@@ -600,7 +610,7 @@ impl SshClient {
     fn mkdir(&self, py: Python<'_>, path: &str, parents: bool, exist_ok: bool) -> PyResult<()> {
         let resolved = self.resolve_native(path);
         let command = if parents && exist_ok {
-            format!("mkdir -p -- {}", shell_quote(&resolved))
+            format!("mkdir -p -- {}", shell_quote_path(&resolved))
         } else if parents {
             let parent = Path::new(&resolved)
                 .parent()
@@ -608,16 +618,16 @@ impl SshClient {
                 .unwrap_or("/");
             format!(
                 "mkdir -p -- {} && mkdir -- {}",
-                shell_quote(parent),
-                shell_quote(&resolved)
+                shell_quote_path(parent),
+                shell_quote_path(&resolved)
             )
         } else if exist_ok {
             format!(
                 "mkdir -- {0} 2>/dev/null || test -d {0}",
-                shell_quote(&resolved)
+                shell_quote_path(&resolved)
             )
         } else {
-            format!("mkdir -- {}", shell_quote(&resolved))
+            format!("mkdir -- {}", shell_quote_path(&resolved))
         };
         py.allow_threads(|| self.checked_remote("mkdir", path, &command, None))
             .map(|_| ())
@@ -626,7 +636,7 @@ impl SshClient {
 
     fn delete(&self, py: Python<'_>, path: &str) -> PyResult<()> {
         let resolved = self.resolve_native(path);
-        let command = format!("rm -- {}", shell_quote(&resolved));
+        let command = format!("rm -- {}", shell_quote_path(&resolved));
         py.allow_threads(|| self.checked_remote("delete", path, &command, None))
             .map(|_| ())
             .map_err(CoreError::into_pyerr)
@@ -673,7 +683,7 @@ impl SshClient {
         let flag_list =
             normalize_flags_object(py, flags.as_ref(), true).map_err(CoreError::into_pyerr)?;
 
-        let mut parts = vec![format!("cd {}", shell_quote(&workdir))];
+        let mut parts = vec![format!("cd {}", shell_quote_path(&workdir))];
         for (key, value) in env {
             parts.push(format!(
                 "export {}={}",

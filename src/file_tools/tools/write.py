@@ -68,8 +68,8 @@ async def write(
     c = _resolve_client(client)
     path = await c.resolve(file_path)
 
-    exists = await c.exists(path)
-    if exists and await c.is_dir(path):
+    exists, _, is_dir = await c.path_info(path)
+    if exists and is_dir:
         raise WriteIsDirectoryError(f"Destination path is an existing directory: {path}")
 
     is_new = not exists

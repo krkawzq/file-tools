@@ -2,11 +2,12 @@ import os
 import signal
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
-from anyio import sleep
+from anyio import Event, create_task_group, sleep
 
 from file_tools import (
     ClientError,
@@ -54,6 +55,51 @@ async def test_exec_command_timeout(tmp_path: Path) -> None:
     assert r.timed_out
     assert not r.ok
     assert r.exit_code == 124
+
+
+async def test_exec_command_keeps_event_loop_responsive(tmp_path: Path) -> None:
+    client = LocalClient(cwd=tmp_path)
+    finished = Event()
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not finished.is_set():
+            ticks += 1
+            await sleep(0.02)
+
+    async with create_task_group() as task_group:
+        task_group.start_soon(ticker)
+        result = await client.exec_command(
+            "import time; time.sleep(0.25)",
+            interpreter=sys.executable,
+        )
+        finished.set()
+
+    assert result.ok
+    assert ticks >= 5
+
+
+async def test_native_command_releases_gil(tmp_path: Path) -> None:
+    from file_tools import _core
+
+    heartbeat = threading.Event()
+
+    def pulse() -> None:
+        time.sleep(0.05)
+        heartbeat.set()
+
+    thread = threading.Thread(target=pulse)
+    thread.start()
+    result = _core.LocalClient(cwd=tmp_path).exec_command(
+        "import time; time.sleep(0.25)",
+        interpreter=sys.executable,
+    )
+    observed_during_call = heartbeat.is_set()
+    thread.join()
+
+    assert result.ok
+    assert observed_during_call
 
 
 @pytest.mark.parametrize("timeout", [-1, float("inf"), float("nan"), True])

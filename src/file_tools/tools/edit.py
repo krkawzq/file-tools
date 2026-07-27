@@ -120,15 +120,16 @@ async def edit(
         raise ValueError("prepend=True cannot be used together with replace_all=True")
 
     if old_string == "":
-        if await c.exists(path):
+        exists, is_file, is_dir = await c.path_info(path)
+        if exists:
             if not prepend:
                 raise EditFileExistsError(
                     f"File already exists; empty old_string only creates new files: {path}\n"
                     "Hint: to insert at the start of an existing file, set prepend=True explicitly."
                 )
-            if await c.is_dir(path):
+            if is_dir:
                 raise EditError(f"Path is a directory: {path}")
-            if not await c.is_file(path):
+            if not is_file:
                 raise EditError(f"Path is not a regular file: {path}")
             try:
                 content = await c.read_text(path, encoding=encoding)
@@ -164,12 +165,13 @@ async def edit(
             operation="created",
         )
 
-    if not await c.exists(path):
+    exists, is_file, _ = await c.path_info(path)
+    if not exists:
         raise EditFileNotFoundError(
             f"File does not exist: {path}\n"
             f"Hint: to write content into a new file, set old_string to an empty string."
         )
-    if not await c.is_file(path):
+    if not is_file:
         raise EditError(f"Path is not a regular file: {path}")
 
     try:

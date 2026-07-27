@@ -11,6 +11,8 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from anyio import create_task_group
+
 from .. import _core
 from ..client import (
     Client,
@@ -427,11 +429,12 @@ async def apply_patch(
         if path in current:
             return current[path]
         try:
-            exists = await backend.exists(path)
-            state = _FileState(exists=exists)
-            if exists:
-                state.is_dir = await backend.is_dir(path)
-                state.is_file = await backend.is_file(path)
+            exists, is_file, is_dir = await backend.path_info(path)
+            state = _FileState(
+                exists=exists,
+                is_file=is_file,
+                is_dir=is_dir,
+            )
         except ClientError as e:
             raise PatchApplyError(f"Failed to check path {path}: {e}") from e
         initial[path] = deepcopy(state)
@@ -521,22 +524,40 @@ async def apply_patch(
                 )
                 result.modified.append(hunk.path)
 
-    for path, state in current.items():
-        before = initial[path]
-        if state.exists and state.is_file:
-            if not before.exists or state.content != before.content:
-                try:
-                    await backend.write_text(path, state.content or "")
-                except ClientError as e:
-                    raise PatchApplyError(f"Failed to write file {path}: {e}") from e
+    write_errors: list[PatchApplyError] = []
 
-    for path, state in current.items():
-        before = initial[path]
-        if before.exists and before.is_file and not state.exists:
-            try:
-                await backend.delete(path)
-            except ClientError as e:
-                raise PatchApplyError(f"Failed to delete file {path}: {e}") from e
+    async def write_state(path: str, content: str) -> None:
+        try:
+            await backend.write_text(path, content)
+        except ClientError as e:
+            write_errors.append(PatchApplyError(f"Failed to write file {path}: {e}"))
+
+    async with create_task_group() as task_group:
+        for path, state in current.items():
+            before = initial[path]
+            if state.exists and state.is_file:
+                if not before.exists or state.content != before.content:
+                    task_group.start_soon(write_state, path, state.content or "")
+
+    if write_errors:
+        raise write_errors[0]
+
+    delete_errors: list[PatchApplyError] = []
+
+    async def delete_state(path: str) -> None:
+        try:
+            await backend.delete(path)
+        except ClientError as e:
+            delete_errors.append(PatchApplyError(f"Failed to delete file {path}: {e}"))
+
+    async with create_task_group() as task_group:
+        for path, state in current.items():
+            before = initial[path]
+            if before.exists and before.is_file and not state.exists:
+                task_group.start_soon(delete_state, path)
+
+    if delete_errors:
+        raise delete_errors[0]
 
     return result
 

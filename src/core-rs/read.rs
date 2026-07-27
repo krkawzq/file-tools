@@ -12,8 +12,8 @@ use std::fmt::Write;
 /// - No trailing newline: last segment counts
 /// - Trailing newline: does not add an extra empty line
 #[pyfunction]
-pub fn count_lines(text: &str) -> usize {
-    count_lines_inner(text)
+pub fn count_lines(py: Python<'_>, text: &str) -> usize {
+    py.allow_threads(|| count_lines_inner(text))
 }
 
 fn count_lines_inner(text: &str) -> usize {
@@ -79,26 +79,32 @@ fn resolve_window(total_lines: usize, offset: i64, limit: usize) -> PyResult<(us
 
 /// Slice lines (0-based `[start, start+take)`) keeping original endings.
 #[pyfunction]
-pub fn slice_lines(text: &str, start: usize, take: usize) -> Vec<String> {
+pub fn slice_lines(py: Python<'_>, text: &str, start: usize, take: usize) -> Vec<String> {
+    py.allow_threads(|| slice_lines_inner(text, start, take))
+}
+
+fn slice_lines_inner(text: &str, start: usize, take: usize) -> Vec<String> {
     if text.is_empty() {
-        return Vec::new();
+        Vec::new()
+    } else {
+        text.split_inclusive('\n')
+            .skip(start)
+            .take(take)
+            .map(str::to_owned)
+            .collect()
     }
-    text.split_inclusive('\n')
-        .skip(start)
-        .take(take)
-        .map(str::to_owned)
-        .collect()
 }
 
 /// Format lines as `cat -n` (right-aligned line numbers + tab).
 #[pyfunction]
 pub fn format_cat_n(
+    py: Python<'_>,
     lines: Vec<String>,
     start_line: usize,
     total_lines: usize,
     truncated: bool,
 ) -> String {
-    format_cat_n_inner(&lines, start_line, total_lines, truncated)
+    py.allow_threads(|| format_cat_n_inner(&lines, start_line, total_lines, truncated))
 }
 
 fn format_cat_n_inner(
@@ -141,6 +147,16 @@ fn format_cat_n_inner(
 /// - `show_line_numbers`: if true, content is cat -n format
 #[pyfunction]
 pub fn prepare_read(
+    py: Python<'_>,
+    text: &str,
+    offset: i64,
+    limit: usize,
+    show_line_numbers: bool,
+) -> PyResult<(String, usize, usize, usize, bool, Vec<String>)> {
+    py.allow_threads(|| prepare_read_inner(text, offset, limit, show_line_numbers))
+}
+
+fn prepare_read_inner(
     text: &str,
     offset: i64,
     limit: usize,
@@ -185,7 +201,7 @@ mod tests {
         let total = count_lines_inner("1\n2\n3\n4\n5\n");
         let (start, take, truncated) = resolve_window(total, -2, 2000).unwrap();
         assert_eq!((start, take, truncated), (3, 2, false));
-        let lines = slice_lines("1\n2\n3\n4\n5\n", start, take);
+        let lines = slice_lines_inner("1\n2\n3\n4\n5\n", start, take);
         assert_eq!(lines.concat(), "4\n5\n");
     }
 
@@ -194,14 +210,17 @@ mod tests {
         let total = count_lines_inner("a\nb\nc\n");
         let (start, take, _) = resolve_window(total, 2, 1).unwrap();
         assert_eq!((start, take), (1, 1));
-        assert_eq!(slice_lines("a\nb\nc\n", start, take).concat(), "b\n");
+        assert_eq!(
+            slice_lines_inner("a\nb\nc\n", start, take).concat(),
+            "b\n"
+        );
     }
 
     #[test]
     fn slice_lines_handles_empty_and_unterminated_text() {
-        assert!(slice_lines("", 0, 1).is_empty());
-        assert_eq!(slice_lines("a\nb", 1, 1), vec!["b"]);
-        assert!(slice_lines("a\nb", 2, 1).is_empty());
+        assert!(slice_lines_inner("", 0, 1).is_empty());
+        assert_eq!(slice_lines_inner("a\nb", 1, 1), vec!["b"]);
+        assert!(slice_lines_inner("a\nb", 2, 1).is_empty());
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
@@ -14,7 +15,6 @@ from . import _core
 
 ClientError = _core.ClientError
 CommandResult = _core.CommandResult
-IncorrectPasswordError = _core.IncorrectPasswordError
 ClientKind = Literal["local", "ssh"]
 
 _T = TypeVar("_T")
@@ -29,7 +29,7 @@ async def run_blocking(
 ) -> _T:
     """Run blocking native work without occupying the event-loop thread."""
     call = partial(function, *args, **kwargs)
-    return await to_thread.run_sync(call, abandon_on_cancel=True)
+    return await to_thread.run_sync(call)
 
 
 class _AsyncClient:
@@ -68,6 +68,9 @@ class _AsyncClient:
 
     async def is_dir(self, path: str) -> bool:
         return await self._call("is_dir", path)
+
+    async def path_info(self, path: str) -> tuple[bool, bool, bool]:
+        return await self._call("path_info", path)
 
     async def read_text(self, path: str, *, encoding: str = "utf-8") -> str:
         return await self._call("read_text", path, encoding=encoding)
@@ -168,7 +171,7 @@ class SshClient(_AsyncClient):
             raise ValueError("ssh user is required")
         if isinstance(port, bool) or not isinstance(port, int) or not 0 < port <= 65535:
             raise ValueError("ssh port is required and must be a positive integer")
-        if connect_timeout <= 0:
+        if not math.isfinite(connect_timeout) or connect_timeout <= 0:
             raise ValueError("connect_timeout must be a positive finite number")
 
         self.host = host
@@ -287,7 +290,6 @@ __all__ = [
     "ClientError",
     "ClientKind",
     "CommandResult",
-    "IncorrectPasswordError",
     "LocalClient",
     "SshClient",
     "get_client",

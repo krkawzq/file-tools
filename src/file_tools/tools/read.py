@@ -104,11 +104,12 @@ async def read(
     c = _resolve_client(client)
     path = await c.resolve(file_path)
 
-    if await c.is_dir(path):
+    exists, is_file, is_dir = await c.path_info(path)
+    if not exists:
+        raise ReadFileNotFoundError(f"File does not exist: {path}")
+    if is_dir:
         raise ReadIsDirectoryError(f"Path is a directory, not a file: {path}")
-    if not await c.is_file(path):
-        if not await c.exists(path):
-            raise ReadFileNotFoundError(f"File does not exist: {path}")
+    if not is_file:
         raise ReadError(f"Path is not a regular file: {path}")
 
     try:

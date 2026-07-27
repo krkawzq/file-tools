@@ -129,14 +129,14 @@ impl LocalClient {
     }
 
     #[pyo3(signature = (*parts))]
-    fn join(&self, parts: &Bound<'_, pyo3::types::PyTuple>) -> String {
+    fn join(&self, py: Python<'_>, parts: &Bound<'_, pyo3::types::PyTuple>) -> String {
         let mut result = PathBuf::new();
         for part in parts.iter() {
             if let Ok(value) = part.extract::<String>() {
                 result.push(value);
             }
         }
-        result.to_string_lossy().into_owned()
+        py.allow_threads(|| result.to_string_lossy().into_owned())
     }
 
     fn exists(&self, py: Python<'_>, path: &str) -> bool {
@@ -149,6 +149,13 @@ impl LocalClient {
 
     fn is_dir(&self, py: Python<'_>, path: &str) -> bool {
         py.allow_threads(|| Path::new(&self.resolve_native(path)).is_dir())
+    }
+
+    fn path_info(&self, py: Python<'_>, path: &str) -> (bool, bool, bool) {
+        py.allow_threads(|| match std::fs::metadata(self.resolve_native(path)) {
+            Ok(metadata) => (true, metadata.is_file(), metadata.is_dir()),
+            Err(_) => (false, false, false),
+        })
     }
 
     #[pyo3(signature = (path, *, encoding = "utf-8"))]

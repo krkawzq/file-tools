@@ -9,12 +9,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# contents:read is enough for checkout; actions:write is required for
+# actions/cache (setup-uv / rust-cache) and upload-artifact when permissions
+# are explicitly restricted.
 permissions:
   contents: read
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Match Cargo.toml intent without full LTO on GitHub-hosted runners (OOM risk).
+  CARGO_PROFILE_RELEASE_LTO: "thin"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
   # Python layer + extension smoke across OS × supported CPython.
@@ -27,12 +34,16 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.12", "3.13", "3.14"]
         include:
-          # 3.15 is still pre-release; keep signal without blocking merges.
+          # 3.15 is still pre-release; signal only, do not block merges.
           - os: ubuntu-latest
             python-version: "3.15"
             experimental: true
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental == true }}
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.experimental || false }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -48,16 +59,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
+          # One writer per OS avoids cache-upload races across the Python matrix.
           save-if: ${{ matrix.python-version == '3.12' }}
 
+      # No uv.lock in repo; resolve from pyproject on each run.
       - name: Install dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --extra dev
 
+      # Debug/dev profile: Cargo.toml release uses fat LTO; that is too heavy for
+      # every matrix cell and can OOM GitHub-hosted runners.
       - name: Build extension
-        run: uv run maturin develop --release --uv
+        run: uv run maturin develop --uv
 
       - name: Run Python tests
-        run: uv run python -m pytest
+        run: uv run python -m pytest -q
 
   # Rust unit tests once per OS (independent of Python version matrix).
   rust:
@@ -66,11 +81,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
 
-      # PyO3 still needs a CPython on PATH for the build script / link probe.
+      # PyO3 still needs a CPython on PATH for the build-script / link probe.
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
@@ -84,7 +103,9 @@ jobs:
           shared-key: rust-${{ matrix.os }}
 
       - name: Run Rust tests
-        run: cargo test --no-default-features
+        run: |
+          export PYO3_PYTHON="$(uv python find)"
+          cargo test --no-default-features
 
   # One release wheel per OS is enough: tool.maturin uses pyo3/abi3-py312.
   build:
@@ -93,6 +114,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -110,15 +135,27 @@ jobs:
           shared-key: build-${{ matrix.os }}
 
       - name: Install dependencies
-        run: uv sync --locked --extra dev
+        run: uv sync --extra dev
 
       - name: Build wheel
         run: uv run maturin build --release --out dist
+
+      - name: Smoke-import wheel
+        run: |
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [[ ${#wheels[@]} -eq 0 ]]; then
+            echo "no wheels in dist/" >&2
+            exit 1
+          fi
+          uv venv .ci-smoke
+          uv pip install --python .ci-smoke "${wheels[@]}"
+          uv run --python .ci-smoke python -c "import file_tools; import file_tools._core"
 
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}
-          path: dist/*
+          path: dist/*.whl
           if-no-files-found: error
           retention-days: 7
