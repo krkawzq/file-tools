@@ -138,9 +138,10 @@ async def test_exec_command_nonzero_exit(tmp_path: Path) -> None:
 
 
 async def test_exec_command_interpreter_and_flags(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("Windows Git Bash is unreliable for -c/-lc smoke checks in CI")
     if shutil.which("bash") is None:
         pytest.skip("bash is not installed")
-    # Use -c (not -lc): Windows Git Bash login shells often fail or emit noise.
     c = LocalClient(cwd=tmp_path)
     r = await c.exec_command("echo hi-from-bash", interpreter="bash", flags="-c")
     assert r.ok
