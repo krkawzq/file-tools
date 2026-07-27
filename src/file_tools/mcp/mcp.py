@@ -1,4 +1,4 @@
-"""MCP server construction + thin ``@mcp.tool`` wrappers.
+"""Thin ``@mcp.tool`` wrappers for the file tools.
 
 Business logic lives in :mod:`file_tools.mcp.tools` as plain functions.
 """
@@ -6,12 +6,9 @@ Business logic lives in :mod:`file_tools.mcp.tools` as plain functions.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 from . import tools as impl
-
-if TYPE_CHECKING:
-    from fastmcp import FastMCP
 
 
 _Tool = TypeVar("_Tool", bound=Callable[..., str])
@@ -19,20 +16,6 @@ _Tool = TypeVar("_Tool", bound=Callable[..., str])
 
 class _ToolRegistrar(Protocol):
     def tool(self, function: _Tool, /) -> _Tool: ...
-
-
-def create_mcp_server(name: str = "file-tools") -> FastMCP:
-    try:
-        from fastmcp import FastMCP
-    except ImportError as e:
-        raise ImportError(
-            "MCP support requires fastmcp. Install with: "
-            "uv add --optional mcp fastmcp  or  pip install 'file-tools[mcp]'"
-        ) from e
-
-    mcp = FastMCP(name)
-    register_tools(mcp)
-    return mcp
 
 
 def register_tools(mcp: _ToolRegistrar) -> None:

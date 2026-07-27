@@ -39,6 +39,9 @@ from .password import (
     PasswordRequest,
 )
 
+SSH_EXIT_DRAIN_GRACE_SECS = 0.02
+SSH_REMOTE_FLUSH_GRACE_SECS = 0.01
+
 
 def parse_ssh_flags(flags: str | Sequence[str] | None) -> tuple[str, ...]:
     """Normalize OpenSSH-style flags into an immutable argument sequence."""
@@ -472,6 +475,17 @@ class SshClient:
         remote = " && ".join(parts)
         control_token = secrets.token_hex(8)
         control_prefix = f"__FILE_TOOLS_{control_token}__"
+        flush_function = f"__file_tools_flush_{control_token}"
+        flush_status = f"__file_tools_status_{control_token}"
+        remote = (
+            f"{flush_function}() {{ "
+            f"{flush_status}=$?; trap - EXIT; "
+            f"sleep {SSH_REMOTE_FLUSH_GRACE_SECS}; "
+            f'exit "${flush_status}"; '
+            "}; "
+            f"trap {flush_function} EXIT; "
+            f"{remote}"
+        )
         pgid_inner = (
             f"printf '%s PGID %s\\n' {self._shell_quote(control_prefix)} "
             f'"$$" >&2; exec sh -c {self._shell_quote(remote)}'
@@ -500,6 +514,8 @@ class SshClient:
         stderr_buffer = HeadTailBytes(output_limit)
         stderr_probe = bytearray()
         remote_process: tuple[str, int] | None = None
+        exit_status_seen_at: float | None = None
+        last_output_at: float | None = None
         marker_pattern = re.compile(
             re.escape(control_prefix.encode())
             + rb" (PGID|PID) ([0-9]+)\r?\n"
@@ -603,19 +619,50 @@ class SshClient:
             # the caller intentionally supplies no input.
             channel.shutdown_write()
             while True:
+                received_output = False
                 if channel.recv_ready():
                     stdout_buffer.append(channel.recv(OUTPUT_READ_CHUNK_BYTES))
+                    received_output = True
                 if channel.recv_stderr_ready():
                     chunk = channel.recv_stderr(OUTPUT_READ_CHUNK_BYTES)
                     _observe_stderr(chunk)
                     stderr_buffer.append(chunk)
+                    received_output = True
+
+                now = time.monotonic()
+                if received_output:
+                    last_output_at = now
+
+                exit_ready = channel.exit_status_ready()
+                if exit_ready and exit_status_seen_at is None:
+                    exit_status_seen_at = now
+
                 if (
-                    channel.exit_status_ready()
+                    exit_ready
                     and not channel.recv_ready()
                     and not channel.recv_stderr_ready()
                 ):
-                    break
-                if deadline is not None and time.monotonic() >= deadline:
+                    quiet_since = max(
+                        t
+                        for t in (exit_status_seen_at, last_output_at)
+                        if t is not None
+                    )
+                    # Paramiko can expose exit status / EOF before its
+                    # transport thread has published the last stdout or
+                    # extended-data packet to the channel buffers. Always
+                    # observe a short quiet period; channel state alone is not
+                    # sufficient to prove both buffers are drained.
+                    if now - quiet_since >= SSH_EXIT_DRAIN_GRACE_SECS:
+                        break
+
+                # Once the remote process has exited, allow the bounded drain
+                # grace period to complete even if the execution deadline was
+                # reached at the same instant as the exit status.
+                if (
+                    exit_status_seen_at is None
+                    and deadline is not None
+                    and now >= deadline
+                ):
                     _terminate_remote(transport)
                     try:
                         channel.close()
@@ -623,7 +670,7 @@ class SshClient:
                         pass
                     return _result(exit_code=124, timed_out=True)
                 sleep_for = 0.01
-                if deadline is not None:
+                if deadline is not None and exit_status_seen_at is None:
                     sleep_for = min(sleep_for, max(0.0, deadline - time.monotonic()))
                 time.sleep(sleep_for)
             code = channel.recv_exit_status()

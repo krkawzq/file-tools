@@ -1,5 +1,5 @@
-"""MCP layer: plain tool functions + thin server wrappers."""
+"""MCP layer: plain tool functions + thin registration wrappers."""
 
-from .server import create_mcp_server, register_tools
+from .mcp import register_tools
 
-__all__ = ["create_mcp_server", "register_tools"]
+__all__ = ["register_tools"]

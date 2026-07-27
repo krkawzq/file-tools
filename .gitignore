@@ -7,6 +7,7 @@ __pycache__/
 dist/
 build/
 .ruff_cache/
+.mypy_cache/
 
 # Rust / maturin
 /target/

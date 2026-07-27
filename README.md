@@ -5,7 +5,7 @@ Agent-oriented file tools with:
 - **Pluggable terminal clients** (`local`, `ssh`) — file I/O + command execution
 - **Rust string core** (pyo3) for edit matching, line slicing, and patch application
 - **Agent protocol**: 1-based line offsets; negative offset = tail
-- **MCP**: `tools.py` (scalar wrappers) + `server.py` (server build only)
+- **MCP**: `tools.py` (plain implementations) + `mcp.py` (FastMCP wrappers)
 - **CLI**: MCP-aligned `read`, `write`, `apply_patch`, and `bash` commands
 
 ## Layout
@@ -17,11 +17,12 @@ src/
     client/          # LocalClient, SshClient, client factory/cache
     tools/           # exactly read / write / edit / apply_patch / bash
     mcp/
-      tools.py       # FastMCP tool registration (simple params only)
-      server.py      # create_mcp_server()
+      tools.py       # plain MCP tool implementations
+      mcp.py         # FastMCP tool registration (simple params only)
     cli/
       tools.py       # scalar CLI adapters + exit-code handling
       main.py        # argparse parser and console entry point
+      mcp_server.py  # MCP server construction and console entry point
     _core.pyi
   tests/
 ```
@@ -97,7 +98,87 @@ when no password is set. SSH host keys are loaded from the server account's
 standard `known_hosts` files and unknown keys are rejected by default.
 
 
-MCP layering: plain functions in `mcp/tools.py`; thin `@mcp.tool` wrappers in `mcp/server.py`.
+MCP layering: plain functions in `mcp/tools.py`; thin `@mcp.tool` wrappers in
+`mcp/mcp.py`; server construction and startup in `cli/mcp_server.py`.
+
+Start the MCP server over FastMCP's default stdio transport:
+
+```bash
+file-tools-mcp
+# or
+python -m file_tools.cli.mcp_server
+```
+
+### Codex plugin
+
+The repository is also a Codex plugin whose public surface is the MCP server.
+Its `.mcp.json` starts the server with:
+
+```bash
+python -m file_tools.cli.mcp_server
+```
+
+The `python` executable visible to Codex must already provide `fastmcp`, and
+the Rust extension must already be built in `src/file_tools` or the
+`file-tools` package must be installed in that environment. The plugin adds
+`./src` to `PYTHONPATH` when it starts the server.
+
+The repository also contains a repo marketplace at
+`.agents/plugins/marketplace.json`. After the `master` branch is available on
+GitHub, configure and install it with:
+
+```bash
+codex plugin marketplace add krkawzq/file-tools --ref master
+codex plugin add file-tools@file-tools
+```
+
+### Claude Code plugin
+
+The repository is also a Claude Code plugin. It provides the MCP server
+(shared with Codex via `.mcp.json`) plus a skill definition that tells
+Claude Code when and how to use the tools.
+
+**Prerequisites.** The system `python` must have `fastmcp` installed:
+
+```bash
+pip install fastmcp
+```
+
+No other installation is required. The Rust extension in `src/file_tools/` is
+pre-built; `.mcp.json` adds `./src` to `PYTHONPATH` so the package is
+importable without `pip install`.
+
+**How it works.**
+
+1. **MCP server** — `.mcp.json` registers the `file-tools` MCP server. Claude
+   Code auto-discovers project-level `.mcp.json` files and starts the server on
+   stdio when the project is loaded.
+
+2. **Skill** — `.claude/skills/file-tools/SKILL.md` is a skill definition
+   that Claude Code loads into context. It describes all five tools (`read`,
+   `write`, `edit`, `apply_patch`, `bash`), their parameters, SSH mode, and
+   when to prefer these tools over Claude Code's built-in equivalents.
+
+**Coexistence with the Codex plugin.** The two plugins share the same MCP
+server but use separate plugin machinery and do not conflict:
+
+| Concern | Codex | Claude Code |
+|---|---|---|
+| Plugin manifest | `.codex-plugin/plugin.json` | `.claude/skills/file-tools/SKILL.md` |
+| Agent config | `skills/file-tools/agents/openai.yaml` | N/A (skill-based) |
+| MCP config | `.mcp.json` (shared) | `.mcp.json` (shared) |
+| Core code | `src/` (read-only) | `src/` (read-only) |
+
+### Skill (Claude Code only)
+
+The skill at `.claude/skills/file-tools/SKILL.md` is loaded when the project
+is opened in Claude Code. It teaches Claude:
+
+- When to use file-tools MCP tools vs built-in `Read`/`Write`/`Edit`/`Bash`
+- How to use SSH mode for remote file operations and command execution
+- The structured patch format for `apply_patch`
+- Line selection rules for `read` (1-based offset, negative tail, limit)
+- Edit matching semantics (unique-match enforcement, replace_all, prepend)
 
 ## CLI
 

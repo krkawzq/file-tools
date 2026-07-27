@@ -1,0 +1,21 @@
+{
+  "name": "file-tools",
+  "interface": {
+    "displayName": "File Tools"
+  },
+  "plugins": [
+    {
+      "name": "file-tools",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/krkawzq/file-tools.git",
+        "ref": "master"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

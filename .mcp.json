@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "file-tools": {
+      "command": "python",
+      "args": [
+        "-m",
+        "file_tools.cli.mcp_server"
+      ],
+      "cwd": ".",
+      "env": {
+        "PYTHONPATH": "./src"
+      }
+    }
+  }
+}

@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 file-tools = "file_tools.cli:main"
+file-tools-mcp = "file_tools.cli.mcp_server:main"
 
 [project.optional-dependencies]
 ssh = ["paramiko>=3.4"]

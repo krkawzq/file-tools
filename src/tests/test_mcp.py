@@ -2,8 +2,8 @@ import inspect
 from pathlib import Path
 from typing import Callable
 
-from file_tools.mcp.server import register_tools
 from file_tools.client import clear_client_cache
+from file_tools.mcp.mcp import register_tools
 
 
 class _FakeMcp:

@@ -291,6 +291,7 @@ class _FakeChannel:
         self.command = ""
         self.stdin_closed = False
         self.closed = False
+        self.eof_received = exits
         self._exits = exits
         self.stdout = bytearray(stdout)
         self.stderr = bytearray(stderr)
@@ -331,6 +332,27 @@ class _FakeChannel:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _DelayedOutputChannel(_FakeChannel):
+    """Expose output only after exit status has already become ready."""
+
+    def __init__(self, *, stdout: bytes, stderr: bytes) -> None:
+        super().__init__(exits=True)
+        # Reproduce Paramiko publishing exit/EOF state before its transport
+        # thread makes the final data packets visible to recv_ready().
+        self.eof_received = True
+        self._pending_stdout = stdout
+        self._pending_stderr = stderr
+        self._stdout_ready_polls = 0
+
+    def recv_ready(self) -> bool:
+        self._stdout_ready_polls += 1
+        if self._stdout_ready_polls == 3:
+            self.stdout.extend(self._pending_stdout)
+            self.stderr.extend(self._pending_stderr)
+            self.eof_received = True
+        return super().recv_ready()
 
 
 class _FakeTransport:
@@ -399,6 +421,22 @@ def test_ssh_exec_bounds_output() -> None:
     assert result.stderr.endswith("b" * 64)
 
 
+def test_ssh_exec_drains_output_that_arrives_after_exit_status() -> None:
+    channel = _DelayedOutputChannel(
+        stdout=b"late stdout\n",
+        stderr=b"late stderr\n",
+    )
+    client = _fake_ssh_exec_client(channel)
+
+    result = client.exec_command("fast-command")
+
+    assert result.ok
+    assert result.stdout == "late stdout\n"
+    assert result.stderr == "late stderr\n"
+    assert result.stdout_total_bytes == len(b"late stdout\n")
+    assert result.stderr_total_bytes == len(b"late stderr\n")
+
+
 def test_ssh_wrapper_command_executes_with_expected_shell_semantics(
     tmp_path: Path,
 ) -> None:
@@ -422,3 +460,24 @@ def test_ssh_wrapper_command_executes_with_expected_shell_semantics(
     assert completed.returncode == 0
     assert completed.stdout == b"remote-ok"
     assert b"__FILE_TOOLS_" in completed.stderr
+
+
+def test_ssh_wrapper_flush_grace_preserves_explicit_exit_status(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt" or shutil.which("sh") is None:
+        pytest.skip("requires a local POSIX shell to validate the SSH wrapper")
+    channel = _FakeChannel()
+    client = _fake_ssh_exec_client(channel)
+    client._cwd = str(tmp_path)
+
+    client.exec_command("printf 'tail-error' >&2; exit 7")
+    completed = subprocess.run(
+        ["sh", "-c", channel.command],
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 7
+    assert b"tail-error" in completed.stderr
+    assert "sleep 0.01" in channel.command
