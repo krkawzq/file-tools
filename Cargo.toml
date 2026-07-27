@@ -1,0 +1,24 @@
+[package]
+name = "file_tools_core"
+version = "0.1.0"
+edition = "2021"
+description = "High-speed string operators for file-tools (edit/read/patch)"
+license = "MIT"
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+path = "src/core-rs/lib.rs"
+
+[dependencies]
+pyo3 = { version = "0.25" }
+
+[features]
+# Keep Rust unit tests linkable on every OS. Maturin explicitly enables the
+# extension-module feature when it builds the Python wheel.
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[profile.release]
+lto = true
+codegen-units = 1

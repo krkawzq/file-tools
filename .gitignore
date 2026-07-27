@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.ruff_cache/
+
+# Rust / maturin
+/target/
+*.so
+*.pyd
+*.dll
+src/file_tools/_core*.so
+src/file_tools/_core*.pyd
+
+# Local
+tmp/
+.DS_Store

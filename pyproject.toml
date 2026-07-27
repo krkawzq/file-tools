@@ -1,0 +1,48 @@
+[project]
+name = "file-tools"
+version = "0.1.0"
+description = "Agent file tools with pluggable filesystem backends and Rust string kernel"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "fastmcp>=3.4.4",
+]
+
+[project.scripts]
+file-tools = "file_tools.cli:main"
+
+[project.optional-dependencies]
+ssh = ["paramiko>=3.4"]
+mcp = ["fastmcp>=2.0"]
+dev = [
+    "pytest>=9.1.1",
+    "maturin>=1.8",
+    "paramiko>=3.4",
+]
+
+[build-system]
+requires = ["maturin>=1.8,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+module-name = "file_tools._core"
+python-source = "src"
+# Python 3.12 is the package floor, so one abi3 wheel per OS/architecture can
+# serve all supported CPython 3.12+ versions.
+features = ["pyo3/extension-module", "pyo3/abi3-py312"]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
+pythonpath = ["src"]
+testpaths = ["src/tests"]
+markers = [
+    "performance: lightweight performance regression checks",
+]
