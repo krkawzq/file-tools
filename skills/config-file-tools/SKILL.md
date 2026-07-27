@@ -73,6 +73,9 @@ cd "$FILE_TOOLS_ROOT"
 .venv/bin/python -c "from file_tools.cli.mcp_server import create_mcp_server; create_mcp_server(); print('server construction OK')"
 ```
 
+On native Windows, use `.venv\Scripts\python.exe` for the Python checks and
+`.venv\Scripts\file-tools.exe --help` for the console script.
+
 Then exercise the **effective** host MCP entry (or stdio list-tools). Discovery must list exactly: `read`, `write`, `edit`, `apply_patch`, `bash`.
 
 Restart or open a new agent thread when the host caches skills / MCP processes.

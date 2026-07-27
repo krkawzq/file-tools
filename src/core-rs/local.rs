@@ -68,7 +68,7 @@ fn display_path(path: PathBuf) -> PathBuf {
             if let Some(unc) = rest.strip_prefix(r"UNC\") {
                 return PathBuf::from(format!(r"\\{unc}"));
             }
-            return PathBuf::from(rest.as_ref());
+            return PathBuf::from(rest);
         }
     }
     path
