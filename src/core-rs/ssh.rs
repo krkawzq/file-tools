@@ -332,14 +332,6 @@ impl SshClient {
                 format!("ControlPath={}", control_path.to_string_lossy()),
             ]);
         }
-        if self.ssh_flags.iter().any(|flag| flag == "-a") {
-            args.extend([
-                "-o".to_string(),
-                "IdentitiesOnly=yes".to_string(),
-                "-o".to_string(),
-                "IdentityAgent=none".to_string(),
-            ]);
-        }
         args.extend(self.ssh_flags.iter().cloned());
 
         let mut env = HashMap::new();

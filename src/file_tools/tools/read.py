@@ -67,7 +67,8 @@ async def read(
     must be a regular file, and must contain at least one byte. Line selection
     uses 1-based positive offsets, treats zero as line 1, and uses
     ``offset=-N`` to return the final ``N`` lines while ignoring ``limit`` for
-    the tail window.
+    the tail window. Symlinks resolving to regular files are followed; FIFOs,
+    devices, and other special files are rejected before opening.
 
     When ``show_line_numbers`` is true, the returned ``content`` uses
     ``cat -n``-style prefixes. A positive-offset read capped by ``limit`` also

@@ -43,7 +43,13 @@ def register_tools(mcp: _ToolRegistrar) -> None:
 
         The target must be a non-empty regular file. Missing paths,
         directories, empty files, and other non-regular paths raise. UTF-8
-        decoding replaces invalid byte sequences.
+        decoding replaces invalid byte sequences. Path resolution follows a
+        symbolic link when its resolved target is a regular file; FIFOs,
+        devices, and other special files are rejected before opening.
+
+        The selected text window is limited to 16 MiB of transferred bytes;
+        this MCP surface does not expose a larger transfer setting. SSH
+        connection and individual file operations use 30-second timeouts.
 
         **Line selection**
 
@@ -135,6 +141,10 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         Existing directories cannot be targets. This is a text API (UTF-8
         encode on write), not a binary blob store.
 
+        The encoded payload is limited to 16 MiB; this MCP surface does not
+        expose a larger transfer setting. SSH connection and individual file
+        operations use 30-second timeouts.
+
         Args:
             file_path: Destination. Absolute, ``~``-relative, or relative to
                 ``cwd``.
@@ -217,18 +227,25 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         There is no append mode. To append at EOF, use ``apply_patch`` with an
         ``Update File`` hunk that has a bare ``@@`` and only ``+`` lines.
 
-        ``old_string`` / ``new_string`` are literal file text (indentation and
-        newlines included). Empty ``new_string`` on a replace deletes the
+        ``old_string`` / ``new_string`` preserve literal indentation and text.
+        When the target contains CRLF, LF line breaks in match/replacement or
+        prepend text are accepted and written as CRLF to preserve the file's
+        newline convention. Empty ``new_string`` on a replace deletes the
         match. No trailing newline is auto-added; a normal replace keeps the
         file's existing EOF newline state unless the match or replacement
         changes it.
+
+        Each file read or write is limited to 16 MiB; this MCP surface does not
+        expose a larger transfer setting. SSH connection and individual file
+        operations use 30-second timeouts.
 
         Args:
             file_path: File to edit. Absolute, ``~``-relative, or relative to
                 ``cwd``.
             old_string: Literal match text, or ``""`` for create/prepend.
             new_string: Replacement, new-file body, or prepend prefix. Empty
-                on replace deletes the matched span.
+                on replace deletes the matched span. LF is normalized to CRLF
+                when the existing target uses CRLF.
             cwd: Required working directory on the selected client.
             replace_all: Replace every non-overlapping match. Defaults false
                 (unique match required).
@@ -304,6 +321,9 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         before any write. Grammar errors, missing sources, conflicting
         destinations, unmatched context, and stale versions block all mutation.
         Low-level commit failures attempt best-effort deterministic rollback.
+        Each file read or write is limited to 16 MiB; this MCP surface does not
+        expose a larger transfer setting. SSH connection and individual file
+        operations use 30-second timeouts.
 
         **Format (not unified diff)**
 
@@ -387,7 +407,9 @@ def register_tools(mcp: _ToolRegistrar) -> None:
           start after earlier matches.
         - ``*** Move to: dest`` only inside Update; destination must not exist.
         - Added / non-empty updates end with a newline; empty stays zero bytes;
-          move-only preserves source bytes.
+          move-only preserves source text and newline shape for valid UTF-8.
+          Invalid UTF-8 bytes are decoded with replacement before the move is
+          committed, so this remains a text operation rather than a binary move.
 
         Args:
             patch_text: Full document from ``*** Begin Patch`` through

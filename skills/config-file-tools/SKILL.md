@@ -1,95 +1,114 @@
 ---
 name: config-file-tools
-description: Build, configure, diagnose, and verify the File Tools source checkout and MCP server. Trigger on a fresh clone, after Rust/Python/dependency/launcher changes, when adding File Tools to an agent host, or when the MCP server fails to start, import its native extension, or expose all five tools.
+description: Install, build, configure, diagnose, and verify File Tools from either a source checkout or a GitHub-installed plugin for Claude Code, Codex, Cursor, and Grok. Trigger on fresh setup, marketplace/plugin installation, host migration, plugin update, Rust/Python/dependency/launcher changes, or failures to start MCP, import file_tools._core, use fastmcp, or expose all five tools.
 ---
 
 # Configure File Tools
 
-Bring up File Tools from source and verify each layer: native extension → Python API → CLI → MCP discovery. Inspect the environment before changing dependencies or host config.
+Bring up File Tools through the path the selected host actually runs. Verify each layer: native extension → Python API → CLI/server construction → MCP discovery → host activation.
 
-## Establish the target
+## Choose the runtime root
 
-1. Find the source root: `pyproject.toml`, `Cargo.toml`, `src/file_tools/`, `scripts/file_tools_mcp.py`, `.mcp.json`, and host manifests (`.codex-plugin/`, `.claude-plugin/`, `.grok-plugin/`, `.cursor-plugin/`).
-2. Read those declarations and the host's MCP / plugin config before changing anything.
-3. Clarify goal: source dev, rebuild after code change, or fix an agent host launcher.
-4. Use `uv` for Python env and deps. Apply the environment's proxy / package-install rules before networked `uv` or Cargo.
-5. Native extensions are not portable across OS, arch, or Python floors — rebuild when those change.
+Distinguish these workflows before building:
 
-## Build from source
+- **Source development:** build in the checkout containing the code being edited.
+- **GitHub/marketplace installation:** install first, resolve the host's actual installed plugin root, and build there.
+
+The remote repository does not carry a portable generated `file_tools._core` binary. Building a nearby checkout does not repair a host that runs a copied or cached plugin directory.
+
+Confirm the selected root with `realpath`. It must contain `pyproject.toml`, `Cargo.toml`, `src/file_tools/`, `scripts/file_tools_mcp.py`, and the selected host's manifest. Do not infer it from the current working directory or hard-code a cache version.
+
+## Install and locate by host
+
+Honor the machine's shell, proxy, and package-install policy. Use an interactive shell when required aliases or functions live in its startup files.
+
+| Host | GitHub installation | Resolve the installed root |
+|---|---|---|
+| Codex | `codex plugin marketplace add krkawzq/file-tools`, then `codex plugin add file-tools@file-tools --json` | Capture `installedPath` from the JSON result. For an existing install, confirm `file-tools@file-tools` with `codex plugin list` and inspect the configured plugin/cache metadata. Do not select `file-tools@personal` when GitHub was requested. |
+| Claude Code | `claude plugin marketplace add krkawzq/file-tools`, then `claude plugin install file-tools@file-tools` | Use `claude plugin list` / `claude plugin details file-tools@file-tools` and the host's plugin metadata to identify the enabled installed copy. Runtime paths use `${CLAUDE_PLUGIN_ROOT}`. |
+| Grok | `grok plugin marketplace add krkawzq/file-tools`, then `grok plugin install file-tools --trust` | Use `grok plugin list` / `grok plugin details file-tools` and the host's plugin metadata to identify the enabled installed copy. Runtime paths use `${GROK_PLUGIN_ROOT}`. |
+| Cursor | Install the GitHub repository through the available Cursor marketplace or team catalog | Inspect `.cursor-plugin/plugin.json` plus Cursor's installed-plugin details/config and resolve the copy Cursor actually launches. Do not substitute the development checkout unless Cursor is explicitly configured to use it. |
+
+Add a marketplace only when it is not already configured. Refresh or update it with that host's native command when the user requests the latest revision. Prefer a machine-readable install result when available; otherwise use host details/config. Treat a filesystem search of host caches as a last resort and confirm the candidate's name, version, manifest, and enabled registration before building it.
+
+## Build in the selected root
+
+Run from the resolved source or installed plugin root:
 
 ```bash
+cd "$FILE_TOOLS_ROOT"
 uv sync --extra dev
 uv run maturin develop --release --uv
 ```
 
-Resolves Python deps, builds `file_tools._core` (pyo3, CPython **3.12+ abi3**), and installs into the uv env. Re-`uv sync --extra dev` when lock/deps change; rebuild Maturin after Rust or build-metadata changes.
+This creates a root-local `.venv`, resolves Python dependencies, builds the pyo3 **CPython 3.12+ abi3** extension, and installs the package editable. Expect a generated file such as `src/file_tools/_core.abi3.so`.
 
-## MCP launcher
+Re-run `uv sync --extra dev` when lock/dependencies change. Re-run Maturin after Rust, Python binding, build metadata, OS, architecture, or Python-floor changes. Never copy a native extension from another checkout, host, OS, or architecture.
 
-Canonical entry: `scripts/file_tools_mcp.py` (also `.mcp.json`).
+For a plugin update, resolve the installed root again: hosts commonly install a new version into a new cache directory, leaving the previous compiled directory intact but unused.
 
-| Expectation | Detail |
+## Match the host launcher
+
+Read the selected host manifest and its effective MCP config before changing it:
+
+| Host surface | Expected entry |
 |---|---|
-| Command | `python scripts/file_tools_mcp.py` over stdio (or the same script under a host plugin-root absolute path) |
-| Host wrappers | e.g. `${CLAUDE_PLUGIN_ROOT}` / `${GROK_PLUGIN_ROOT}` + `/scripts/file_tools_mcp.py` |
-| Import path | Launcher resolves repo/plugin root from its own path and puts `<root>/src` on `sys.path` / `PYTHONPATH` |
-| Runtime | Interpreter must provide `fastmcp` and load `file_tools._core` |
+| Codex | `.mcp.json` → `python ./scripts/file_tools_mcp.py` |
+| Claude Code | `.claude-plugin/plugin.json` → `python ${CLAUDE_PLUGIN_ROOT}/scripts/file_tools_mcp.py` |
+| Grok | `.grok-plugin/plugin.json` → `python ${GROK_PLUGIN_ROOT}/scripts/file_tools_mcp.py` |
+| Cursor | `.cursor-plugin/plugin.json` → `python -m file_tools.cli.mcp_server` with plugin-root `cwd` and `PYTHONPATH=./src` |
 
-Use an absolute interpreter only for a machine-local pin. Never put credentials in MCP config. After host/plugin config changes, use that host's refresh/reinstall flow; start a new agent thread if tools/skills are cached.
+The portable launcher resolves its root from its own file and prepends `<root>/src`. The effective interpreter must still provide `fastmcp` and load the native extension from that same root.
 
-## Verify in layers
+If `<root>/.venv/bin/python` succeeds but the host's exact `python` fails, fix the interpreter mismatch in a supported machine-local host config or launcher override. Prefer an absolute `<root>/.venv/bin/python` for a machine-local pin. Do not commit a machine-specific cache path to a distributable manifest, and re-resolve it after plugin updates.
 
-Smallest proof first, then expand:
+## Verify the installed copy in layers
+
+Set `FILE_TOOLS_ROOT` to the proven runtime root, not a convenient checkout:
 
 ```bash
-# 1) Native + public Python API
-uv run python -c "from file_tools._core import count_lines; from file_tools import read, write, edit, apply_patch, bash; print('imports OK')"
+cd "$FILE_TOOLS_ROOT"
 
-# 2) CLI + server construction
-uv run file-tools --help
-uv run python -c "from file_tools.cli.mcp_server import create_mcp_server; create_mcp_server(); print('server construction OK')"
+# 1) Build artifact and plugin-local environment
+find src/file_tools -maxdepth 1 -type f -name "_core*.so" -print
+.venv/bin/python -c "from file_tools._core import count_lines; from file_tools import read, write, edit, apply_patch, bash; print('plugin venv imports OK')"
 
-# 3) MCP stdio entry (or host list-tools against the same entry)
-uv run python scripts/file_tools_mcp.py
+# 2) Exact default launcher interpreter
+PYTHONPATH="$FILE_TOOLS_ROOT/src" python -c "import file_tools; import file_tools.cli.mcp_server; print('host interpreter imports OK', file_tools.__file__)"
+
+# 3) CLI and server construction
+.venv/bin/file-tools --help
+.venv/bin/python -c "from file_tools.cli.mcp_server import create_mcp_server; create_mcp_server(); print('server construction OK')"
 ```
 
-After substantive source changes:
+Then invoke the effective host MCP entry or perform a stdio list-tools request against it. **MCP discovery must list exactly:** `read`, `write`, `edit`, `apply_patch`, `bash`. Process start or imports alone are insufficient.
+
+Finally, verify the selected host reports the intended remote plugin as installed and enabled. Restart or open a new agent thread after install, update, build, or config changes when that host caches skills or MCP processes.
+
+For substantive source changes, additionally run:
 
 ```bash
 uv run pytest
 cargo test --no-default-features
 ```
 
-**MCP discovery must list exactly:** `read`, `write`, `edit`, `apply_patch`, `bash`. Process start alone is insufficient.
-
-Optional docstring smoke (agent-facing copy lives on registered tools):
-
-```bash
-uv run python -c "
-from file_tools.mcp.register import register_tools
-class M:
-    def __init__(self): self.tools = {}
-    def tool(self, f): self.tools[f.__name__] = f; return f
-m = M(); register_tools(m)
-assert set(m.tools) == {'read','write','edit','apply_patch','bash'}
-assert all(m.tools[n].__doc__ for n in m.tools)
-print('tool docs OK')
-"
-```
-
 ## Diagnose by layer
 
-| Symptom | Check |
+| Symptom | Likely cause and check |
 |---|---|
-| `file_tools._core` missing / bad ABI | CPython 3.12+, OS/arch; `uv run maturin develop --release --uv` |
-| `fastmcp` missing | `uv sync --extra dev`; same env as the launcher |
-| CLI OK, host won't start server | Host `command` / `args` / env vs `.mcp.json` or plugin manifest |
-| Server up, tools missing | Stdio list-tools + registration path, not imports alone |
-| Tools OK, SSH fails | Auth, host keys, port, remote `cwd` — runtime client config, not build |
+| Plugin is enabled but `file_tools._core` is missing | The GitHub-installed copy was never built, or a different root was built. Resolve the enabled root and build there. |
+| A development checkout imports, but the host fails | The host runs another cached/copied root. Inspect the effective plugin registration and launcher path. |
+| `.venv/bin/python` works, host `python` lacks `fastmcp` | The launcher uses a different interpreter. Apply a supported machine-local interpreter override. |
+| Native import reports a bad ABI | Check CPython 3.12+, OS, and architecture; rebuild in the runtime root. |
+| Update reintroduces the import failure | The host activated a new version directory. Resolve and build the new installed root. |
+| CLI works, host cannot start MCP | Compare effective `command`, `args`, `cwd`, environment, and plugin-root expansion with the host manifest. |
+| Server starts, tools are missing | Perform MCP list-tools and inspect registration; do not stop at process startup. |
+| Tools work locally, SSH operations fail | Diagnose auth, host keys, port, and remote `cwd`; this is runtime client configuration, not a build issue. |
 
 ## Integrity
 
-- `pyproject.toml` + `uv.lock` own Python deps; do not hand-edit `.venv`.
+- Keep `pyproject.toml` and `uv.lock` authoritative; do not hand-edit `.venv`.
 - Keep Cargo features aligned with `[tool.maturin]`.
-- Do not weaken host-key checks or embed passwords for smoke tests.
-- Report verified layer and remaining failure when setup cannot finish.
+- Preserve host-specific manifests and root variables; do not force one host's paths or commands onto the others.
+- Do not weaken SSH host-key checks or embed credentials in smoke tests.
+- Report the exact host, plugin identity, runtime root, verified layer, and remaining failure when setup cannot finish.

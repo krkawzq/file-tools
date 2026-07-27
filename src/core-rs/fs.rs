@@ -124,6 +124,22 @@ pub fn read_local_window(
     limit: usize,
     max_bytes: usize,
 ) -> CoreResult<TextWindow> {
+    let info = local_file_info(path, display_path)?;
+    if !info.exists {
+        return Err(CoreError::NotFound(format!(
+            "read_window failed: {display_path}: file does not exist"
+        )));
+    }
+    if info.is_dir() {
+        return Err(CoreError::Client(format!(
+            "read_window failed: {display_path}: path is a directory"
+        )));
+    }
+    if !info.is_file() {
+        return Err(CoreError::Client(format!(
+            "read_window failed: {display_path}: path is not a regular file"
+        )));
+    }
     let file =
         File::open(path).map_err(|error| CoreError::from_io("read_window", display_path, error))?;
     let mut reader = BufReader::new(file);

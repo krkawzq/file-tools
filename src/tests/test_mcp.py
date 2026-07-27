@@ -1,10 +1,11 @@
 import inspect
 from collections.abc import Awaitable
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import pytest
 
+from file_tools.mcp import tools as mcp_tools
 from file_tools.mcp.register import register_tools
 
 
@@ -26,6 +27,47 @@ def test_registered_mcp_tools_are_async() -> None:
 
     assert set(mcp.tools) == {"read", "write", "edit", "apply_patch", "bash"}
     assert all(inspect.iscoroutinefunction(tool) for tool in mcp.tools.values())
+
+
+def test_registered_docs_explain_fixed_limits_and_text_normalization() -> None:
+    mcp = _FakeMcp()
+    register_tools(mcp)
+
+    for name in ("read", "write", "edit", "apply_patch"):
+        doc = mcp.tools[name].__doc__ or ""
+        assert "16 MiB" in doc
+        assert "30-second" in doc
+    assert "symbolic link" in (mcp.tools["read"].__doc__ or "")
+    assert "CRLF" in (mcp.tools["edit"].__doc__ or "")
+    assert "Invalid UTF-8 bytes" in (mcp.tools["apply_patch"].__doc__ or "")
+
+
+def test_local_mcp_client_drops_ssh_only_cache_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    sentinel = object()
+
+    def fake_get_cached_client(**settings: Any) -> object:
+        captured.update(settings)
+        return sentinel
+
+    monkeypatch.setattr(mcp_tools, "_get_cached_client", fake_get_cached_client)
+
+    result = mcp_tools._client(
+        cwd="/workspace",
+        client=" LOCAL ",
+        ssh_host="ignored-host",
+        ssh_port=2222,
+        ssh_user="ignored-user",
+        ssh_password="ignored-secret",
+        ssh_key="ignored-key",
+        ssh_flags="-A",
+        ssh_accept_unknown_host_key=True,
+    )
+
+    assert result is sentinel
+    assert captured == {"client": "local", "cwd": "/workspace"}
 
 
 @pytest.mark.anyio

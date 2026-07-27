@@ -242,7 +242,7 @@ fn derive_new_contents_inner(
     path: &str,
     chunks: Vec<Chunk>,
 ) -> Result<String, String> {
-    // Move-only hunks preserve the source bytes.
+    // Move-only hunks preserve the decoded source text and newline shape.
     if chunks.is_empty() {
         return Ok(original_content.to_owned());
     }

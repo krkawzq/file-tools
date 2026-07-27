@@ -45,17 +45,19 @@ def _client(
     ssh_flags: str = "",
     ssh_accept_unknown_host_key: bool = False,
 ):
-    return _get_cached_client(
-        client=client,
-        cwd=cwd,
-        ssh_host=ssh_host,
-        ssh_port=ssh_port,
-        ssh_user=ssh_user,
-        ssh_password=ssh_password,
-        ssh_key=ssh_key,
-        ssh_flags=ssh_flags,
-        accept_unknown_host_key=ssh_accept_unknown_host_key,
-    )
+    kind = str(client).strip().lower()
+    settings: dict[str, object] = {"client": kind, "cwd": cwd}
+    if kind == "ssh":
+        settings.update(
+            ssh_host=ssh_host,
+            ssh_port=ssh_port,
+            ssh_user=ssh_user,
+            ssh_password=ssh_password,
+            ssh_key=ssh_key,
+            ssh_flags=ssh_flags,
+            accept_unknown_host_key=ssh_accept_unknown_host_key,
+        )
+    return _get_cached_client(**settings)
 
 
 async def read(
@@ -83,7 +85,11 @@ async def read(
 
     ``offset`` is 1-based (``0`` → 1). Negative ``offset`` tails the last N
     lines and ignores ``limit`` for window size. Target must be a non-empty
-    regular file; UTF-8 decoding replaces invalid bytes.
+    regular file; UTF-8 decoding replaces invalid bytes. Symlinks resolving to
+    regular files are followed, while FIFOs/devices/other special files raise.
+
+    The selected text window is limited to 16 MiB. SSH connection and
+    individual file operations use 30-second timeouts.
 
     Args:
         target_file: Absolute, ``~``-relative, or ``cwd``-relative path.
@@ -148,6 +154,8 @@ async def write(
 
     Creates missing parents. Overwrites existing regular files without backup.
     Writes ``content`` exactly (no auto trailing newline; empty → zero bytes).
+    The encoded payload is limited to 16 MiB. SSH connection and individual
+    file operations use 30-second timeouts.
 
     Args:
         file_path: Absolute, ``~``-relative, or ``cwd``-relative destination.
@@ -211,12 +219,16 @@ async def edit(
     tolerance. Default unique match; ``replace_all=true`` for all occurrences.
     ``old_string=""`` creates a new file (fails if exists) or, with
     ``prepend=true``, prepends to an existing file. No append mode — use
-    ``apply_patch`` for EOF append. No auto trailing newline.
+    ``apply_patch`` for EOF append. No auto trailing newline. When an existing
+    target contains CRLF, LF in match/replacement/prepend text is accepted and
+    written as CRLF. Each file read/write is limited to 16 MiB; SSH connection
+    and individual file operations use 30-second timeouts.
 
     Args:
         file_path: Absolute, ``~``-relative, or ``cwd``-relative path.
         old_string: Match text, or ``""`` for create/prepend.
-        new_string: Replacement, new body, or prepend prefix.
+        new_string: Replacement, new body, or prepend prefix. LF is normalized
+            to CRLF when the existing target uses CRLF.
         cwd: Required working directory.
         replace_all: Replace all non-overlapping matches. Defaults false.
         prepend: Prepend mode; requires ``old_string=""``. Defaults false.
@@ -283,7 +295,10 @@ async def apply_patch(
     deterministic rollback. Format is not unified diff: ``***`` / ``@@`` in
     column 1; Update content lines need space/``-``/``+`` prefixes. Bare
     ``@@`` with only ``+`` lines appends at EOF. See the MCP tool docstring on
-    the registered ``apply_patch`` wrapper for full examples.
+    the registered ``apply_patch`` wrapper for full examples. Each file
+    read/write is limited to 16 MiB; SSH connection and individual file
+    operations use 30-second timeouts. Move-only hunks preserve decoded text
+    and newline shape for valid UTF-8; invalid bytes are replaced.
 
     Args:
         patch_text: Full document including Begin/End Patch markers.

@@ -79,6 +79,9 @@ async def edit(
     Like :func:`write`, this tool never adds a trailing newline automatically.
     A normal replacement otherwise preserves the file's existing end-of-file
     newline state unless the matched or replacement text explicitly changes it.
+    When an existing target contains CRLF, LF line breaks in ``old_string`` are
+    accepted for matching and LF in ``new_string`` or prepend text is normalized
+    to CRLF to preserve the target's newline convention.
 
     Args:
         file_path: Absolute, home-relative, or client-cwd-relative file path.
@@ -87,7 +90,8 @@ async def edit(
         new_string: Literal replacement text. When ``old_string`` is empty,
             this is the complete new-file content or, with ``prepend=True``,
             the content to prepend. Otherwise, an empty string deletes the
-            matched text.
+            matched text. LF is normalized to CRLF when an existing target
+            contains CRLF.
         replace_all: Replace all matches instead of requiring uniqueness.
         prepend: Explicitly prepend ``new_string`` to an existing file.
             Requires an empty ``old_string``. Defaults to false.

@@ -195,7 +195,7 @@ class _PatchParser:
         trimmed = line.strip()
 
         if self._state == "not_started":
-            if trimmed == BEGIN_PATCH:
+            if line.rstrip() == BEGIN_PATCH:
                 self._state = "started"
                 return
             raise PatchParseError("patch must start with '*** Begin Patch'")
@@ -385,6 +385,9 @@ async def apply_patch(
     chunk requires the old lines to match at EOF. Matching tries exact lines
     first, then whitespace and Unicode-normalized fallbacks. ``*** Move to:``
     is valid only inside an update and requires a nonexistent destination.
+    Move-only hunks preserve decoded text and newline shape for valid UTF-8.
+    Invalid UTF-8 byte sequences are replaced during decoding, so this remains
+    a text operation rather than a byte-preserving binary move.
 
     Args:
         patch_text: Complete document including ``*** Begin Patch`` and

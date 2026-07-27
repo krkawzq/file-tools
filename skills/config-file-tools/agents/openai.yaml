@@ -1,4 +1,4 @@
 interface:
   display_name: "Configure File Tools"
-  short_description: "Build, launch, and verify File Tools MCP"
-  default_prompt: "Use $config-file-tools to build from source, wire the MCP launcher, and verify all five tools."
+  short_description: "Install, build, and verify File Tools across agent hosts"
+  default_prompt: "Use $config-file-tools to install or rebuild File Tools in the runtime root used by my selected agent host, then verify MCP discovery."

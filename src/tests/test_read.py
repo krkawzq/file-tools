@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,30 @@ async def test_missing(tmp_path: Path) -> None:
     client = LocalClient(cwd=tmp_path)
     with pytest.raises(ReadFileNotFoundError):
         await read("nope.txt", client=client)
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="requires symlink support")
+async def test_symlink_to_regular_file_is_followed(tmp_path: Path) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("content\n")
+    (tmp_path / "link.txt").symlink_to(target)
+
+    result = await read(
+        "link.txt",
+        show_line_numbers=False,
+        client=LocalClient(cwd=tmp_path),
+    )
+
+    assert result.content == "content\n"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="requires POSIX FIFO support")
+async def test_non_regular_file_is_rejected_before_open(tmp_path: Path) -> None:
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    with pytest.raises(ReadError, match="not a regular file"):
+        await read("pipe", client=LocalClient(cwd=tmp_path))
 
 
 async def test_unknown_encoding_is_wrapped_as_read_error(tmp_path: Path) -> None:

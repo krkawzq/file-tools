@@ -14,6 +14,19 @@ from file_tools.tools.apply_patch import (
 pytestmark = pytest.mark.anyio
 
 
+async def test_begin_patch_marker_must_start_in_column_one(tmp_path: Path) -> None:
+    with pytest.raises(PatchParseError, match="must start"):
+        await apply_patch(
+            " *** Begin Patch\n"
+            "*** Add File: should-not-exist.txt\n"
+            "+content\n"
+            "*** End Patch\n",
+            client=LocalClient(cwd=tmp_path),
+        )
+
+    assert not (tmp_path / "should-not-exist.txt").exists()
+
+
 async def test_bare_empty_update_line_is_rejected(tmp_path: Path) -> None:
     (tmp_path / "example.txt").write_text("content\n")
     with pytest.raises(PatchParseError, match="Invalid Update File line"):

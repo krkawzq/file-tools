@@ -292,6 +292,41 @@ async def test_native_ssh_construction_does_not_spawn_process(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
+async def test_ssh_dash_a_keeps_native_openssh_semantics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args_file = tmp_path / "ssh-args"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$@\" > {args_file}\n"
+        "exit 0\n"
+    )
+    fake_ssh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    client = SshClient(
+        "fake-host",
+        port=22,
+        username="test-user",
+        cwd=str(tmp_path),
+        multiplexing=False,
+        ssh_flags="-a",
+        allow_password_prompt=False,
+    )
+    result = await client.exec_command("true", interpreter="bash")
+    args = args_file.read_text().splitlines()
+
+    assert result.ok
+    assert "-a" in args
+    assert "IdentitiesOnly=yes" not in args
+    assert "IdentityAgent=none" not in args
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
 async def test_native_ssh_runner_preserves_exit_and_kills_timeout_tree(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
