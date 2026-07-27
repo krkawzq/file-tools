@@ -58,6 +58,22 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     result
 }
 
+/// Drop Windows `\\?\` / `\\?\UNC\` prefixes from canonicalize() so agent-facing
+/// paths match ordinary `Path.resolve()` / `os.path` strings.
+fn display_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            if let Some(unc) = rest.strip_prefix(r"UNC\") {
+                return PathBuf::from(format!(r"\\{unc}"));
+            }
+            return PathBuf::from(rest.as_ref());
+        }
+    }
+    path
+}
+
 fn absolute_path(path: &Path) -> CoreResult<PathBuf> {
     let expanded = expand_home(path);
     let absolute = if expanded.is_absolute() {
@@ -69,9 +85,11 @@ fn absolute_path(path: &Path) -> CoreResult<PathBuf> {
             })?
             .join(expanded)
     };
-    Ok(absolute
-        .canonicalize()
-        .unwrap_or_else(|_| lexical_normalize(&absolute)))
+    Ok(display_path(
+        absolute
+            .canonicalize()
+            .unwrap_or_else(|_| lexical_normalize(&absolute)),
+    ))
 }
 
 #[pyclass(module = "file_tools._core")]
@@ -104,11 +122,13 @@ impl LocalClient {
         } else {
             self.cwd.join(expanded)
         };
-        candidate
-            .canonicalize()
-            .unwrap_or_else(|_| lexical_normalize(&candidate))
-            .to_string_lossy()
-            .into_owned()
+        display_path(
+            candidate
+                .canonicalize()
+                .unwrap_or_else(|_| lexical_normalize(&candidate)),
+        )
+        .to_string_lossy()
+        .into_owned()
     }
 
     fn read_bytes_native(&self, path: &str) -> CoreResult<Vec<u8>> {

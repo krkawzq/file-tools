@@ -50,7 +50,7 @@ async def test_auto_interpreter_selects_the_native_local_shell(tmp_path: Path) -
 
 async def test_bash_cwd_is_used(tmp_path: Path) -> None:
     client = LocalClient(cwd=tmp_path)
-    (tmp_path / "marker.txt").write_text("x\n")
+    (tmp_path / "marker.txt").write_text("x\n", newline="\n")
     r = await bash(
         "from pathlib import Path; print(Path('marker.txt').read_text(), end='')",
         cwd=str(tmp_path),

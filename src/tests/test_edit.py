@@ -16,7 +16,7 @@ pytestmark = pytest.mark.anyio
 
 async def test_replaces_a_unique_match_and_returns_metadata(tmp_path: Path) -> None:
     target = tmp_path / "example.txt"
-    target.write_text("hello world\n")
+    target.write_text("hello world\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     result = await edit("example.txt", "hello", "hi", client=client)
@@ -29,7 +29,7 @@ async def test_replaces_a_unique_match_and_returns_metadata(tmp_path: Path) -> N
 
 async def test_does_not_add_a_trailing_newline_after_replacement(tmp_path: Path) -> None:
     target = tmp_path / "example.txt"
-    target.write_text("before")
+    target.write_text("before", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     await edit("example.txt", "before", "after", client=client)
@@ -39,7 +39,7 @@ async def test_does_not_add_a_trailing_newline_after_replacement(tmp_path: Path)
 
 async def test_replacement_can_remove_a_trailing_newline(tmp_path: Path) -> None:
     target = tmp_path / "example.txt"
-    target.write_text("before\n")
+    target.write_text("before\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     await edit("example.txt", "before\n", "after", client=client)
@@ -49,7 +49,7 @@ async def test_replacement_can_remove_a_trailing_newline(tmp_path: Path) -> None
 
 async def test_explicitly_prepends_when_old_string_is_empty(tmp_path: Path) -> None:
     target = tmp_path / "example.txt"
-    target.write_text("body")
+    target.write_text("body", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     result = await edit("example.txt", "", "header\n", prepend=True, client=client)
@@ -65,7 +65,7 @@ async def test_empty_old_string_rejects_existing_file_without_explicit_prepend(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "example.txt"
-    target.write_text("body")
+    target.write_text("body", newline="\n")
 
     with pytest.raises(EditFileExistsError, match="prepend=True"):
         await edit(
@@ -110,7 +110,7 @@ async def test_nonempty_old_string_requires_an_existing_file(tmp_path: Path) -> 
 
 async def test_prepend_requires_empty_old_string_and_existing_file(tmp_path: Path) -> None:
     client = LocalClient(cwd=tmp_path)
-    (tmp_path / "existing.txt").write_text("body")
+    (tmp_path / "existing.txt").write_text("body", newline="\n")
 
     with pytest.raises(ValueError, match="old_string"):
         await edit(
@@ -136,7 +136,7 @@ async def test_prepend_requires_empty_old_string_and_existing_file(tmp_path: Pat
 
 
 async def test_not_found(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("line1\nline2\n")
+    (tmp_path / "f.txt").write_text("line1\nline2\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     with pytest.raises(EditStringNotFoundError):
@@ -144,7 +144,7 @@ async def test_not_found(tmp_path: Path) -> None:
 
 
 async def test_ambiguous(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("dup\nmiddle\ndup\n")
+    (tmp_path / "f.txt").write_text("dup\nmiddle\ndup\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     with pytest.raises(EditAmbiguousMatchError):
@@ -152,7 +152,7 @@ async def test_ambiguous(tmp_path: Path) -> None:
 
 
 async def test_replace_all(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("dup\nmiddle\ndup\n")
+    (tmp_path / "f.txt").write_text("dup\nmiddle\ndup\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     result = await edit("f.txt", "dup", "NEW", replace_all=True, client=client)
@@ -161,7 +161,7 @@ async def test_replace_all(tmp_path: Path) -> None:
 
 
 async def test_trailing_whitespace_tolerance(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("hello   \nworld\t\n")
+    (tmp_path / "f.txt").write_text("hello   \nworld\t\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     await edit("f.txt", "hello\nworld", "hi\nthere", client=client)

@@ -6,7 +6,7 @@ from file_tools.cli.main import main
 
 
 def test_cli_read_writes_exact_file_content(tmp_path: Path) -> None:
-    (tmp_path / "note.txt").write_text("first\nsecond\n")
+    (tmp_path / "note.txt").write_text("first\nsecond\n", newline="\n")
     stdout = io.StringIO()
     stderr = io.StringIO()
 
@@ -59,7 +59,7 @@ def test_cli_write_allows_empty_stdin(tmp_path: Path) -> None:
 
 
 def test_cli_edit_replaces_text(tmp_path: Path) -> None:
-    (tmp_path / "note.txt").write_text("before\n")
+    (tmp_path / "note.txt").write_text("before\n", newline="\n")
     stdout = io.StringIO()
 
     exit_code = main(

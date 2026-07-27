@@ -28,7 +28,7 @@ async def test_begin_patch_marker_must_start_in_column_one(tmp_path: Path) -> No
 
 
 async def test_bare_empty_update_line_is_rejected(tmp_path: Path) -> None:
-    (tmp_path / "example.txt").write_text("content\n")
+    (tmp_path / "example.txt").write_text("content\n", newline="\n")
     with pytest.raises(PatchParseError, match="Invalid Update File line"):
         await apply_patch(
             "*** Begin Patch\n"
@@ -42,7 +42,7 @@ async def test_bare_empty_update_line_is_rejected(tmp_path: Path) -> None:
 
 async def test_equal_position_insertions_preserve_patch_order(tmp_path: Path) -> None:
     target = tmp_path / "example.txt"
-    target.write_text("base\n")
+    target.write_text("base\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
     patch_text = (
         "*** Begin Patch\n"
@@ -60,7 +60,7 @@ async def test_equal_position_insertions_preserve_patch_order(tmp_path: Path) ->
 
 
 async def test_update_basic(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("foo\nbar\nbaz\n")
+    (tmp_path / "f.txt").write_text("foo\nbar\nbaz\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
     await apply_patch(
         "*** Begin Patch\n"
@@ -78,7 +78,7 @@ async def test_update_basic(tmp_path: Path) -> None:
 
 async def test_named_context_add_only_chunk_inserts_after_context(tmp_path: Path) -> None:
     target = tmp_path / "app.py"
-    target.write_text("def main():\n    return 0\n")
+    target.write_text("def main():\n    return 0\n", newline="\n")
 
     await apply_patch(
         "*** Begin Patch\n"
@@ -94,7 +94,7 @@ async def test_named_context_add_only_chunk_inserts_after_context(tmp_path: Path
 
 async def test_end_of_file_marker_anchors_replacement(tmp_path: Path) -> None:
     target = tmp_path / "app.py"
-    target.write_text("raise SystemExit(main())\nraise SystemExit(main())\n")
+    target.write_text("raise SystemExit(main())\nraise SystemExit(main())\n", newline="\n")
 
     await apply_patch(
         "*** Begin Patch\n"
@@ -113,7 +113,7 @@ async def test_end_of_file_marker_anchors_replacement(tmp_path: Path) -> None:
 
 
 async def test_add_and_delete(tmp_path: Path) -> None:
-    (tmp_path / "old.txt").write_text("x\n")
+    (tmp_path / "old.txt").write_text("x\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
     result = await apply_patch(
         "*** Begin Patch\n"
@@ -131,7 +131,7 @@ async def test_add_and_delete(tmp_path: Path) -> None:
 
 async def test_add_rejects_existing_file_without_overwriting(tmp_path: Path) -> None:
     target = tmp_path / "existing.txt"
-    target.write_text("original\n")
+    target.write_text("original\n", newline="\n")
 
     with pytest.raises(PatchApplyError, match="destination already exists"):
         await apply_patch(
@@ -147,7 +147,7 @@ async def test_add_rejects_existing_file_without_overwriting(tmp_path: Path) -> 
 
 async def test_same_path_move_is_rejected_without_deleting_source(tmp_path: Path) -> None:
     target = tmp_path / "same.txt"
-    target.write_text("original\n")
+    target.write_text("original\n", newline="\n")
 
     with pytest.raises(PatchApplyError, match="same as the source file"):
         await apply_patch(
@@ -216,8 +216,8 @@ async def test_commit_failure_rolls_back_earlier_writes(tmp_path: Path) -> None:
 async def test_move_rejects_existing_destination(tmp_path: Path) -> None:
     source = tmp_path / "source.txt"
     destination = tmp_path / "destination.txt"
-    source.write_text("source\n")
-    destination.write_text("destination\n")
+    source.write_text("source\n", newline="\n")
+    destination.write_text("destination\n", newline="\n")
 
     with pytest.raises(PatchApplyError, match="Move destination already exists"):
         await apply_patch(

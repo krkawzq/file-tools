@@ -140,12 +140,13 @@ async def test_exec_command_nonzero_exit(tmp_path: Path) -> None:
 async def test_exec_command_interpreter_and_flags(tmp_path: Path) -> None:
     if shutil.which("bash") is None:
         pytest.skip("bash is not installed")
+    # Use -c (not -lc): Windows Git Bash login shells often fail or emit noise.
     c = LocalClient(cwd=tmp_path)
-    r = await c.exec_command("echo hi-from-bash", interpreter="bash", flags="-lc")
+    r = await c.exec_command("echo hi-from-bash", interpreter="bash", flags="-c")
     assert r.ok
     assert "hi-from-bash" in r.stdout
     assert r.extras.get("interpreter") == "bash"
-    assert r.extras.get("flags") == "-lc"
+    assert r.extras.get("flags") == "-c"
 
 
 async def test_exec_command_flags_as_list(tmp_path: Path) -> None:
@@ -181,7 +182,7 @@ async def test_get_client_creates_fresh_local_clients(tmp_path: Path) -> None:
 
 async def test_local_path_info(tmp_path: Path) -> None:
     target = tmp_path / "file.txt"
-    target.write_text("content")
+    target.write_text("content", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     assert await client.path_info("file.txt") == (True, True, False)
@@ -190,7 +191,7 @@ async def test_local_path_info(tmp_path: Path) -> None:
 
 async def test_local_stat_and_atomic_write_detect_stale_versions(tmp_path: Path) -> None:
     target = tmp_path / "file.txt"
-    target.write_text("before")
+    target.write_text("before", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     initial = await client.stat("file.txt")
@@ -214,7 +215,7 @@ async def test_local_full_read_respects_transfer_limit_but_window_is_bounded(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "large.txt"
-    target.write_text("first\n" + ("x" * 4096) + "\nlast\n")
+    target.write_text("first\n" + ("x" * 4096) + "\nlast\n", newline="\n")
     client = LocalClient(cwd=tmp_path, max_transfer_bytes=128)
 
     with pytest.raises(TransferLimitError):
@@ -276,7 +277,7 @@ async def test_native_ssh_construction_does_not_spawn_process(
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_ssh = fake_bin / "ssh"
-    fake_ssh.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    fake_ssh.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n", newline="\n")
     fake_ssh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
@@ -303,7 +304,8 @@ async def test_ssh_dash_a_keeps_native_openssh_semantics(
     fake_ssh.write_text(
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$@\" > {args_file}\n"
-        "exit 0\n"
+        "exit 0\n",
+        newline="\n",
     )
     fake_ssh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
@@ -337,11 +339,12 @@ async def test_native_ssh_runner_preserves_exit_and_kills_timeout_tree(
     fake_ssh.write_text(
         "#!/bin/sh\n"
         "for arg in \"$@\"; do remote=$arg; done\n"
-        "exec /bin/sh -c \"$remote\"\n"
+        "exec /bin/sh -c \"$remote\"\n",
+        newline="\n",
     )
     fake_ssh.chmod(0o755)
     fake_setsid = fake_bin / "setsid"
-    fake_setsid.write_text("#!/bin/sh\nexit 1\n")
+    fake_setsid.write_text("#!/bin/sh\nexit 1\n", newline="\n")
     fake_setsid.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
@@ -384,19 +387,21 @@ async def test_ssh_file_operations_are_bounded_atomic_and_versioned(
     fake_ssh.write_text(
         "#!/bin/sh\n"
         "for arg in \"$@\"; do remote=$arg; done\n"
-        "exec /bin/sh -c \"$remote\"\n"
+        "exec /bin/sh -c \"$remote\"\n",
+        newline="\n",
     )
     fake_ssh.chmod(0o755)
     fake_wc = fake_bin / "wc"
     fake_wc.write_text(
         "#!/bin/sh\n"
         "count=$(PATH=/usr/bin:/bin wc -c)\n"
-        "printf '   %s\\n' \"$count\"\n"
+        "printf '   %s\\n' \"$count\"\n",
+        newline="\n",
     )
     fake_wc.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
     target = tmp_path / "remote.txt"
-    target.write_text("a\nb\nc")
+    target.write_text("a\nb\nc", newline="\n")
     client = SshClient(
         "fake-host",
         port=22,
@@ -436,7 +441,7 @@ async def test_ssh_file_operation_timeout_is_structured(
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_ssh = fake_bin / "ssh"
-    fake_ssh.write_text("#!/bin/sh\nsleep 5\n")
+    fake_ssh.write_text("#!/bin/sh\nsleep 5\n", newline="\n")
     fake_ssh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
     client = SshClient(

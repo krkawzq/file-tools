@@ -15,7 +15,7 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_read_one_based_and_line_numbers(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("a\nb\nc\nd\n")
+    (tmp_path / "f.txt").write_text("a\nb\nc\nd\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     r = await read("f.txt", offset=2, limit=2, client=client)
@@ -28,7 +28,7 @@ async def test_read_one_based_and_line_numbers(tmp_path: Path) -> None:
 
 
 async def test_tail_via_negative_offset(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("1\n2\n3\n4\n5\n")
+    (tmp_path / "f.txt").write_text("1\n2\n3\n4\n5\n", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     r = await read("f.txt", offset=-2, show_line_numbers=False, client=client)
@@ -38,7 +38,7 @@ async def test_tail_via_negative_offset(tmp_path: Path) -> None:
 
 
 async def test_empty_file_errors(tmp_path: Path) -> None:
-    (tmp_path / "e.txt").write_text("")
+    (tmp_path / "e.txt").write_text("", newline="\n")
     client = LocalClient(cwd=tmp_path)
 
     with pytest.raises(ReadEmptyFileError):
@@ -54,7 +54,7 @@ async def test_missing(tmp_path: Path) -> None:
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="requires symlink support")
 async def test_symlink_to_regular_file_is_followed(tmp_path: Path) -> None:
     target = tmp_path / "target.txt"
-    target.write_text("content\n")
+    target.write_text("content\n", newline="\n")
     (tmp_path / "link.txt").symlink_to(target)
 
     result = await read(
@@ -76,7 +76,7 @@ async def test_non_regular_file_is_rejected_before_open(tmp_path: Path) -> None:
 
 
 async def test_unknown_encoding_is_wrapped_as_read_error(tmp_path: Path) -> None:
-    (tmp_path / "f.txt").write_text("content\n")
+    (tmp_path / "f.txt").write_text("content\n", newline="\n")
 
     with pytest.raises(ReadError, match="read_text failed"):
         await read(

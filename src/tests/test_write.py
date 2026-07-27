@@ -28,7 +28,7 @@ async def test_write_nested(tmp_path: Path) -> None:
 
 async def test_encoding_error_does_not_truncate_existing_file(tmp_path: Path) -> None:
     target = tmp_path / "existing.txt"
-    target.write_text("original\n")
+    target.write_text("original\n", newline="\n")
 
     with pytest.raises(WriteError, match="serialize"):
         await write(

@@ -7,9 +7,11 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import urllib.error
 import urllib.request
@@ -50,7 +52,78 @@ def _normalize_machine(machine: str) -> str:
     return aliases.get(value, value)
 
 
-def _wheel_platform_score(filename: str, system: str, machine: str) -> int:
+def _version_tuple(value: str) -> tuple[int, int] | None:
+    match = re.match(r"^(\d+)\.(\d+)", value)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _detect_linux_libc() -> tuple[str, str]:
+    name, version = platform.libc_ver()
+    lowered = name.lower()
+    if "musl" in lowered:
+        return "musl", version
+    if "glibc" in lowered or "gnu" in lowered:
+        return "glibc", version
+
+    config_values = " ".join(
+        str(sysconfig.get_config_var(key) or "")
+        for key in ("HOST_GNU_TYPE", "MULTIARCH", "SOABI")
+    ).lower()
+    if "musl" in config_values:
+        family = "musl"
+    elif "gnu" in config_values or "glibc" in config_values:
+        family = "glibc"
+    else:
+        family = ""
+
+    try:
+        result = subprocess.run(
+            ["ldd", "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        output = f"{result.stdout}\n{result.stderr}".lower()
+    except (OSError, subprocess.SubprocessError):
+        output = ""
+
+    if "musl" in output:
+        match = re.search(r"version\s+(\d+\.\d+)", output)
+        return "musl", match.group(1) if match else version
+    if "glibc" in output or "gnu libc" in output:
+        versions = re.findall(r"\b(\d+\.\d+)\b", output)
+        return "glibc", versions[-1] if versions else version
+    return family, version
+
+
+def _linux_wheel_floor(name: str, libc: str) -> tuple[int, int] | None:
+    family = "musllinux" if libc == "musl" else "manylinux"
+    match = re.search(rf"{family}_(\d+)_(\d+)", name)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+    if family == "manylinux":
+        legacy = {
+            "manylinux1": (2, 5),
+            "manylinux2010": (2, 12),
+            "manylinux2014": (2, 17),
+        }
+        for tag, floor in legacy.items():
+            if tag in name:
+                return floor
+    return None
+
+
+def _wheel_platform_score(
+    filename: str,
+    system: str,
+    machine: str,
+    libc: str = "",
+    libc_version: str = "",
+    os_version: str = "",
+) -> int:
     name = filename.lower()
     system = system.lower()
     machine = _normalize_machine(machine)
@@ -63,15 +136,51 @@ def _wheel_platform_score(filename: str, system: str, machine: str) -> int:
     if system == "linux":
         if not any(tag in name for tag in ("manylinux", "musllinux", "-linux_")):
             return -1
-        return 20 if machine in name else -1
+        if machine not in name:
+            return -1
+        if "musllinux" in name:
+            if libc != "musl":
+                return -1
+            floor = _linux_wheel_floor(name, libc)
+            host = _version_tuple(libc_version)
+            if floor and host and floor > host:
+                return -1
+            if floor and host:
+                return 1000 + floor[0] * 100 + floor[1]
+            return 500 - (floor[0] * 100 + floor[1]) if floor else 100
+        if "manylinux" in name:
+            if libc != "glibc":
+                return -1
+            floor = _linux_wheel_floor(name, "glibc")
+            host = _version_tuple(libc_version)
+            if floor and host and floor > host:
+                return -1
+            if floor and host:
+                return 1000 + floor[0] * 100 + floor[1]
+            # Without a detected host version, prefer the oldest/safest floor.
+            return 500 - (floor[0] * 100 + floor[1]) if floor else 100
+        return 10
 
     if system == "darwin":
         if "macosx" not in name:
             return -1
-        if "universal2" in name:
-            return 10
         mac_machine = "arm64" if machine == "aarch64" else machine
-        return 20 if mac_machine in name else -1
+        is_exact_arch = mac_machine in name
+        if not is_exact_arch and "universal2" not in name:
+            return -1
+        floor_match = re.search(r"macosx_(\d+)_(\d+)", name)
+        floor = (
+            (int(floor_match.group(1)), int(floor_match.group(2)))
+            if floor_match
+            else None
+        )
+        host = _version_tuple(os_version)
+        if floor and host and floor > host:
+            return -1
+        base = 2000 if is_exact_arch else 1000
+        if floor and host:
+            return base + floor[0] * 100 + floor[1]
+        return base - (floor[0] * 100 + floor[1]) if floor else base
 
     if system == "windows":
         if "-win_" not in name:
@@ -91,9 +200,22 @@ def select_wheel_asset(
     *,
     system: str | None = None,
     machine: str | None = None,
+    libc: str | None = None,
+    libc_version: str | None = None,
+    os_version: str | None = None,
 ) -> tuple[str, str]:
     system = system or platform.system()
     machine = machine or platform.machine()
+    detected_libc, detected_libc_version = (
+        _detect_linux_libc() if system.lower() == "linux" else ("", "")
+    )
+    if libc is None:
+        libc = detected_libc
+    libc = libc.lower()
+    if libc_version is None:
+        libc_version = detected_libc_version if libc == detected_libc else ""
+    if os_version is None:
+        os_version = platform.mac_ver()[0] if system.lower() == "darwin" else ""
     candidates: list[tuple[int, str, str]] = []
 
     for asset in release.get("assets", []):
@@ -103,7 +225,14 @@ def select_wheel_asset(
         url = asset.get("browser_download_url")
         if not isinstance(name, str) or not isinstance(url, str):
             continue
-        score = _wheel_platform_score(name, system, machine)
+        score = _wheel_platform_score(
+            name,
+            system,
+            machine,
+            libc,
+            libc_version,
+            os_version,
+        )
         if score >= 0:
             candidates.append((score, name, url))
 
@@ -239,7 +368,29 @@ def ensure_venv(plugin_root: Path) -> tuple[Path, str]:
         raise InstallError(
             f"{python} is older than Python 3.12; replace this plugin-local .venv"
         )
+    ensure_manifest_python_path(venv, python)
     return python, method
+
+
+def ensure_manifest_python_path(
+    venv: Path,
+    python: Path,
+    *,
+    windows: bool | None = None,
+) -> None:
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return
+
+    manifest_python = venv / "bin" / "python.exe"
+    manifest_python.parent.mkdir(parents=True, exist_ok=True)
+    if manifest_python.exists():
+        manifest_python.unlink()
+    try:
+        os.link(python, manifest_python)
+    except OSError:
+        shutil.copy2(python, manifest_python)
 
 
 def install_runtime(python: Path, method: str, wheel: Path) -> None:
