@@ -294,6 +294,48 @@ async def test_native_ssh_construction_does_not_spawn_process(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
+async def test_ssh_control_path_falls_back_from_long_tmpdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args_file = tmp_path / "ssh-args"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_ssh = fake_bin / "ssh"
+    fake_ssh.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$@\" > {args_file}\n"
+        "exit 0\n",
+        newline="\n",
+    )
+    fake_ssh.chmod(0o755)
+    long_tmpdir = tmp_path / ("long-tmpdir-" + "x" * 100)
+    long_tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(long_tmpdir))
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+
+    client = SshClient(
+        "fake-host",
+        port=22,
+        username="test-user",
+        cwd=str(tmp_path),
+        allow_password_prompt=False,
+    )
+    result = await client.exec_command("true", interpreter="bash")
+    args = args_file.read_text().splitlines()
+    control_path = next(
+        value.removeprefix("ControlPath=")
+        for value in args
+        if value.startswith("ControlPath=")
+    )
+    expanded_control_path = control_path.replace("%C", "0" * 40)
+
+    assert result.ok
+    assert len(os.fsencode(expanded_control_path)) <= 103
+    assert Path(control_path).parent.parent == Path("/tmp")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a POSIX fake OpenSSH process")
 async def test_ssh_dash_a_keeps_native_openssh_semantics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -176,8 +176,8 @@ Plugins share the same skills and MCP tools; only the host manifest differs.
 After installing or updating a plugin, invoke its bundled
 `config-file-tools` skill once. It resolves the host's active plugin cache,
 installs the latest compatible `krkawzq/file-tools` release wheel and
-`fastmcp` into that root's `.venv`, and verifies MCP discovery. Plugin installs
-do not require a local Rust toolchain or Maturin build.
+`fastmcp` plus `socksio` into that root's `.venv`, and verifies MCP discovery.
+Plugin installs do not require a local Rust toolchain or Maturin build.
 
 ---
 

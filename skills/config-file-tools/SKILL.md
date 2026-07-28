@@ -32,12 +32,14 @@ python3 "$FILE_TOOLS_ROOT/skills/config-file-tools/scripts/install_latest_releas
 
 The installer queries GitHub's latest published release for
 `krkawzq/file-tools`, selects the current OS, CPU, and libc's `cp312-abi3`
-wheel, creates `$FILE_TOOLS_ROOT/.venv`, explicitly installs both the wheel and
-`fastmcp>=3.4.4`, and verifies native import plus MCP server construction.
+wheel, creates `$FILE_TOOLS_ROOT/.venv`, explicitly installs the wheel,
+`fastmcp>=3.4.4`, and `socksio==1.*`, then verifies native import plus MCP
+server construction.
 
 It prefers `uv venv` and `uv pip install`. When `uv` is absent, it finds Python
 3.12+, creates the environment with `venv`, bootstraps `pip` with `ensurepip`,
-and installs the wheel and `fastmcp` with that environment's Python.
+and installs the wheel, `fastmcp`, and `socksio` with that environment's
+Python.
 
 If GitHub has no published release or the latest release has no compatible
 wheel, stop and report the exact condition and available wheel assets. Do not

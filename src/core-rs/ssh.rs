@@ -18,6 +18,12 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
+const CONTROL_PATH_TEMPLATE: &str = "mux-%C";
+#[cfg(unix)]
+const OPENSSH_CONTROL_HASH_BYTES: usize = 40;
+#[cfg(unix)]
+const MACOS_UNIX_SOCKET_PATH_BYTES: usize = 104;
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -100,6 +106,52 @@ fn expand_local_key(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+#[cfg(unix)]
+fn expanded_control_path_bytes(directory: &Path) -> usize {
+    let path = directory.join(CONTROL_PATH_TEMPLATE);
+    path.to_string_lossy().len() - "%C".len() + OPENSSH_CONTROL_HASH_BYTES
+}
+
+#[cfg(unix)]
+fn control_path_fits(directory: &Path) -> bool {
+    // macOS sockaddr_un::sun_path has 104 bytes, including the trailing NUL.
+    expanded_control_path_bytes(directory) < MACOS_UNIX_SOCKET_PATH_BYTES
+}
+
+#[cfg(unix)]
+fn create_control_dir() -> CoreResult<TempDir> {
+    let directory = tempfile::Builder::new()
+        .prefix("file-tools-ssh-")
+        .tempdir()
+        .map_err(|error| {
+            CoreError::Client(format!("cannot create SSH control directory: {error}"))
+        })?;
+    if control_path_fits(directory.path()) {
+        return Ok(directory);
+    }
+
+    // TMPDIR is normally /var/folders/... on macOS and can make the expanded
+    // mux-%C socket path exceed sun_path. A private directory under /tmp keeps
+    // the socket short while preserving tempfile's restrictive permissions.
+    drop(directory);
+    let directory = tempfile::Builder::new()
+        .prefix("file-tools-ssh-")
+        .tempdir_in("/tmp")
+        .map_err(|error| {
+            CoreError::Client(format!(
+                "cannot create short SSH control directory under /tmp: {error}"
+            ))
+        })?;
+    if !control_path_fits(directory.path()) {
+        return Err(CoreError::Client(format!(
+            "SSH ControlPath is too long ({} bytes; maximum is {})",
+            expanded_control_path_bytes(directory.path()),
+            MACOS_UNIX_SOCKET_PATH_BYTES - 1
+        )));
+    }
+    Ok(directory)
 }
 
 struct SshInvocation {
@@ -227,14 +279,7 @@ impl SshClient {
         }
         #[cfg(unix)]
         let control_dir = if multiplexing {
-            Some(
-                tempfile::Builder::new()
-                    .prefix("file-tools-ssh-")
-                    .tempdir()
-                    .map_err(|error| {
-                        CoreError::Client(format!("cannot create SSH control directory: {error}"))
-                    })?,
-            )
+            Some(create_control_dir()?)
         } else {
             None
         };
@@ -325,7 +370,7 @@ impl SshClient {
             args.extend(["-i".to_string(), key.clone()]);
         }
         if let Some(directory) = &self.control_dir {
-            let control_path = directory.path().join("mux-%C");
+            let control_path = directory.path().join(CONTROL_PATH_TEMPLATE);
             args.extend([
                 "-o".to_string(),
                 "ControlMaster=auto".to_string(),

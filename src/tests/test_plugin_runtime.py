@@ -217,7 +217,7 @@ def test_fetch_latest_release_reports_missing_release(monkeypatch) -> None:
         INSTALLER.fetch_latest_release()
 
 
-def test_pip_fallback_installs_wheel_and_fastmcp(monkeypatch) -> None:
+def test_pip_fallback_installs_wheel_and_runtime_dependencies(monkeypatch) -> None:
     commands: list[list[str]] = []
     monkeypatch.setattr(
         INSTALLER,
@@ -233,10 +233,47 @@ def test_pip_fallback_installs_wheel_and_fastmcp(monkeypatch) -> None:
     )
 
     assert commands[0][-3:] == ["-m", "ensurepip", "--upgrade"]
-    assert commands[1][-2:] == [
+    assert commands[1][-3:] == [
         str(wheel),
         INSTALLER.FASTMCP_REQUIREMENT,
+        INSTALLER.SOCKSIO_REQUIREMENT,
     ]
+
+
+def test_uv_installs_wheel_and_runtime_dependencies(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(INSTALLER.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(
+        INSTALLER,
+        "_run",
+        lambda command: commands.append(list(command)),
+    )
+
+    wheel = Path("/tmp/file_tools.whl")
+    INSTALLER.install_runtime(
+        Path("/plugin/.venv/bin/python"),
+        "uv",
+        wheel,
+    )
+
+    assert commands[0][-3:] == [
+        str(wheel),
+        INSTALLER.FASTMCP_REQUIREMENT,
+        INSTALLER.SOCKSIO_REQUIREMENT,
+    ]
+
+
+def test_runtime_verification_imports_socksio(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        INSTALLER,
+        "_run",
+        lambda command: commands.append(list(command)),
+    )
+
+    INSTALLER.verify_runtime(Path("/plugin/.venv/bin/python"))
+
+    assert "import file_tools, fastmcp, socksio" in commands[0][-1]
 
 
 def test_windows_manifest_python_alias_is_created(tmp_path: Path) -> None:

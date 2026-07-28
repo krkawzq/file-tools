@@ -26,6 +26,7 @@ RELEASE_DOWNLOAD_PREFIX = (
     "https://github.com/krkawzq/file-tools/releases/download/"
 )
 FASTMCP_REQUIREMENT = "fastmcp>=3.4.4"
+SOCKSIO_REQUIREMENT = "socksio==1.*"
 
 
 class InstallError(RuntimeError):
@@ -410,6 +411,7 @@ def install_runtime(python: Path, method: str, wheel: Path) -> None:
                 "--upgrade",
                 str(wheel),
                 FASTMCP_REQUIREMENT,
+                SOCKSIO_REQUIREMENT,
             ]
         )
     else:
@@ -423,6 +425,7 @@ def install_runtime(python: Path, method: str, wheel: Path) -> None:
                 "--upgrade",
                 str(wheel),
                 FASTMCP_REQUIREMENT,
+                SOCKSIO_REQUIREMENT,
             ]
         )
 
@@ -433,7 +436,7 @@ def verify_runtime(python: Path) -> None:
             str(python),
             "-c",
             (
-                "import file_tools, fastmcp; "
+                "import file_tools, fastmcp, socksio; "
                 "from file_tools._core import count_lines; "
                 "from file_tools.cli.mcp_server import create_mcp_server; "
                 "create_mcp_server(); "
@@ -446,8 +449,8 @@ def verify_runtime(python: Path) -> None:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Install the latest krkawzq/file-tools release wheel and fastmcp "
-            "into <plugin-root>/.venv."
+            "Install the latest krkawzq/file-tools release wheel, fastmcp, "
+            "and socksio into <plugin-root>/.venv."
         )
     )
     parser.add_argument(
