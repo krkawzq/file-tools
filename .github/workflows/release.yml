@@ -74,19 +74,15 @@ jobs:
             exit 1
           fi
 
+      # Build wheel (and sdist on the designated matrix cell) in one maturin
+      # invocation. A separate sdist step used to inherit RUSTC_WRAPPER=sccache
+      # from the previous step without sccache on PATH, which broke cargo metadata.
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
-          args: --release --out dist
+          args: --release --out dist${{ matrix.sdist && ' --sdist' || '' }}
           sccache: "true"
-
-      - name: Build sdist
-        if: matrix.sdist
-        uses: PyO3/maturin-action@v1
-        with:
-          command: sdist
-          args: --out dist
 
       - name: Smoke-import wheel
         run: |
