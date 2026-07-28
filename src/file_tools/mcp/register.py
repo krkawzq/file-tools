@@ -462,7 +462,6 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         command: str,
         cwd: str,
         timeout: float = 120.0,
-        description: str = "",
         interpreter: str = "auto",
         flags: str = "",
         env: dict[str, str] | None = None,
@@ -479,10 +478,6 @@ def register_tools(mcp: _ToolRegistrar) -> None:
     ) -> str:
         """Run a bounded foreground command in an explicit workspace.
 
-        Use for diagnostics, builds, tests, and other shell work that is not a
-        structured file edit. Prefer ``read`` / ``edit`` / ``apply_patch`` /
-        ``write`` for file mutations. Always pass explicit ``cwd``.
-
         Default ``interpreter="auto"`` selects ``cmd`` on local Windows and
         ``bash`` on local Unix or SSH. The command string is handed to the
         interpreter with full shell semantics (pipes, redirects, expansions,
@@ -493,7 +488,7 @@ def register_tools(mcp: _ToolRegistrar) -> None:
         Known interpreters get their command-string flag injected: ``-c``
         (POSIX shells, Python, Ruby, Perl), ``-Command`` (PowerShell),
         ``/c`` (``cmd``). Put only extra options in ``flags`` (e.g.
-        ``interpreter="bash", flags="-l"``).
+        ``flags="-l"`` with a login-capable POSIX shell).
 
         Args:
             command: Non-empty command or script (may be multiline).
@@ -501,8 +496,6 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             timeout: Max seconds (default 120). ``0`` disables. Negative /
                 NaN / inf rejected. On timeout: exit 124, ``timed_out`` in
                 the report, partial output kept.
-            description: Optional short label shown as ``desc: ...`` in the
-                report header (does not affect execution).
             interpreter: Executable or ``auto`` (default).
             flags: Extra interpreter flags (platform-aware parsing). Usually
                 omit the injected command-string flag.
@@ -544,7 +537,6 @@ def register_tools(mcp: _ToolRegistrar) -> None:
             command,
             cwd,
             timeout=timeout,
-            description=description,
             interpreter=interpreter,
             flags=flags,
             env=env,

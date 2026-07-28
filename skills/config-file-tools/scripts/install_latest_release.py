@@ -128,7 +128,9 @@ def _wheel_platform_score(
     system = system.lower()
     machine = _normalize_machine(machine)
 
-    if not name.endswith(".whl") or not name.startswith("file_tools-"):
+    if not name.endswith(".whl") or not (
+        name.startswith("mcp_file_tools-") or name.startswith("file_tools-")
+    ):
         return -1
     if "-cp312-abi3-" not in name:
         return -1

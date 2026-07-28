@@ -62,7 +62,7 @@ Work **locally** or over **SSH** with the same interface — pick a client, pass
 ### Library
 
 ```bash
-uv add file-tools   # or: pip install file-tools
+uv add mcp-file-tools   # or: pip install mcp-file-tools
 # from source (native extension):
 uv sync --extra dev && uv run maturin develop --release --uv
 ```

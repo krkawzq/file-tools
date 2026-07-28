@@ -83,7 +83,6 @@ class BashResult:
     stderr_total_bytes: int = 0
     stdout_omitted_bytes: int = 0
     stderr_omitted_bytes: int = 0
-    description: str = ""
     interpreter: str = DEFAULT_INTERPRETER
     flags: str = ""
     invocation: str = ""
@@ -113,8 +112,6 @@ class BashResult:
         omitted_bytes = self.stdout_omitted_bytes + self.stderr_omitted_bytes
         if omitted_bytes:
             header_bits.append(f"output_truncated: {omitted_bytes} bytes omitted")
-        if self.description:
-            header_bits.append(f"desc: {self.description}")
 
         lines = [" | ".join(header_bits), f"$ {self.command}"]
         if self.stdout:
@@ -157,7 +154,6 @@ async def bash(
     *,
     cwd: str | os.PathLike[str],
     timeout: float | None = DEFAULT_TIMEOUT_SECS,
-    description: str = "",
     env: Mapping[str, str] | None = None,
     stdin: str | None = None,
     interpreter: str = DEFAULT_INTERPRETER,
@@ -176,14 +172,15 @@ async def bash(
     ``-c`` for POSIX shells, Python, Ruby, and Perl; ``-Command`` for
     PowerShell; and ``/c`` for ``cmd``. Pass only additional interpreter
     options through ``flags``. Non-zero exits and timeouts are returned as
-    :class:`BashResult` values rather than raised as exceptions.
+    :class:`BashResult` values rather than raised as exceptions. On timeout
+    the result uses exit code 124, sets ``timed_out``, and keeps partial
+    output.
 
     Args:
         command: Non-empty command or multiline script string.
         cwd: Required command working directory.
         timeout: Maximum seconds to wait. ``0`` or ``None`` disables the
             timeout; negative and non-finite values are rejected.
-        description: Optional purpose included in formatted output.
         env: Environment variables overlaid on the child process.
         stdin: Optional text sent to standard input.
         interpreter: Executable name/path, or ``"auto"`` for a platform
@@ -303,7 +300,6 @@ async def bash(
         stderr_total_bytes=result.stderr_total_bytes,
         stdout_omitted_bytes=result.stdout_omitted_bytes,
         stderr_omitted_bytes=result.stderr_omitted_bytes,
-        description=str(description or ""),
         interpreter=interp,
         flags=flags_display,
         invocation=invocation,

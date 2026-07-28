@@ -343,7 +343,6 @@ async def bash(
     command: str,
     cwd: str,
     timeout: float = 120.0,
-    description: str = "",
     interpreter: str = "auto",
     flags: str = "",
     env: Mapping[str, str] | None = None,
@@ -369,7 +368,6 @@ async def bash(
         command: Non-empty command or script.
         cwd: Required working directory.
         timeout: Seconds; ``0`` disables. Defaults 120.
-        description: Optional report label.
         interpreter: Executable or ``auto``.
         flags: Extra interpreter flags (command-string flag injected).
         env: Optional env overrides.
@@ -411,7 +409,6 @@ async def bash(
         command,
         cwd=cwd,
         timeout=timeout,
-        description=description,
         interpreter=interpreter,
         flags=flags,
         env=env,

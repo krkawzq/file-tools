@@ -9,7 +9,7 @@
     {
       "name": "file-tools",
       "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "author": {
         "name": "wzq"
       },

@@ -191,11 +191,6 @@ def create_parser() -> argparse.ArgumentParser:
         help="timeout in seconds; 0 disables it (default: 120)",
     )
     bash_parser.add_argument(
-        "--description",
-        default="",
-        help="optional purpose included in formatted output",
-    )
-    bash_parser.add_argument(
         "--interpreter",
         default="auto",
         help="interpreter executable (default: auto; cmd on Windows, bash elsewhere)",

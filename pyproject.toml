@@ -1,6 +1,6 @@
 [project]
-name = "file-tools"
-version = "0.1.0"
+name = "mcp-file-tools"
+version = "0.2.0"
 description = "Agent file tools with native local and SSH clients"
 readme = "README.md"
 requires-python = ">=3.12"

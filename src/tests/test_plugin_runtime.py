@@ -40,17 +40,17 @@ def _asset(name: str) -> dict[str, str]:
         (
             "Linux",
             "x86_64",
-            "file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl",
+            "mcp_file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl",
         ),
         (
             "Darwin",
             "arm64",
-            "file_tools-0.1.0-cp312-abi3-macosx_11_0_arm64.whl",
+            "mcp_file_tools-0.1.0-cp312-abi3-macosx_11_0_arm64.whl",
         ),
         (
             "Windows",
             "AMD64",
-            "file_tools-0.1.0-cp312-abi3-win_amd64.whl",
+            "mcp_file_tools-0.1.0-cp312-abi3-win_amd64.whl",
         ),
     ],
 )
@@ -61,10 +61,10 @@ def test_select_wheel_asset_matches_platform(
 ) -> None:
     release = {
         "assets": [
-            _asset("file_tools-0.1.0-cp312-abi3-win_amd64.whl"),
-            _asset("file_tools-0.1.0-cp312-abi3-macosx_11_0_universal2.whl"),
-            _asset("file_tools-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"),
-            _asset("file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"),
+            _asset("mcp_file_tools-0.1.0-cp312-abi3-win_amd64.whl"),
+            _asset("mcp_file_tools-0.1.0-cp312-abi3-macosx_11_0_universal2.whl"),
+            _asset("mcp_file_tools-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"),
+            _asset("mcp_file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"),
         ]
     }
 
@@ -81,7 +81,7 @@ def test_select_wheel_asset_matches_platform(
 def test_select_wheel_asset_reports_available_incompatible_wheels() -> None:
     release = {
         "assets": [
-            _asset("file_tools-0.1.0-cp312-abi3-win_amd64.whl"),
+            _asset("mcp_file_tools-0.1.0-cp312-abi3-win_amd64.whl"),
         ]
     }
 
@@ -95,8 +95,8 @@ def test_select_wheel_asset_reports_available_incompatible_wheels() -> None:
 
 
 def test_select_wheel_asset_distinguishes_glibc_and_musl() -> None:
-    manylinux = "file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"
-    musllinux = "file_tools-0.1.0-cp312-abi3-musllinux_1_2_x86_64.whl"
+    manylinux = "mcp_file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"
+    musllinux = "mcp_file_tools-0.1.0-cp312-abi3-musllinux_1_2_x86_64.whl"
     release = {"assets": [_asset(manylinux), _asset(musllinux)]}
 
     glibc_name, _ = INSTALLER.select_wheel_asset(
@@ -119,8 +119,8 @@ def test_select_wheel_asset_distinguishes_glibc_and_musl() -> None:
 
 
 def test_select_wheel_asset_uses_automatic_musl_detection(monkeypatch) -> None:
-    manylinux = "file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"
-    musllinux = "file_tools-0.1.0-cp312-abi3-musllinux_1_2_x86_64.whl"
+    manylinux = "mcp_file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"
+    musllinux = "mcp_file_tools-0.1.0-cp312-abi3-musllinux_1_2_x86_64.whl"
     release = {"assets": [_asset(manylinux), _asset(musllinux)]}
     monkeypatch.setattr(
         INSTALLER,
@@ -153,8 +153,8 @@ def test_detect_linux_libc_uses_ldd_for_musl(monkeypatch) -> None:
 
 
 def test_select_wheel_asset_rejects_too_new_glibc_floor() -> None:
-    manylinux_2_17 = "file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"
-    manylinux_2_28 = "file_tools-0.1.0-cp312-abi3-manylinux_2_28_x86_64.whl"
+    manylinux_2_17 = "mcp_file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"
+    manylinux_2_28 = "mcp_file_tools-0.1.0-cp312-abi3-manylinux_2_28_x86_64.whl"
     release = {"assets": [_asset(manylinux_2_17), _asset(manylinux_2_28)]}
 
     selected, _ = INSTALLER.select_wheel_asset(
@@ -171,8 +171,8 @@ def test_select_wheel_asset_rejects_too_new_glibc_floor() -> None:
 def test_select_wheel_asset_rejects_unknown_linux_libc() -> None:
     release = {
         "assets": [
-            _asset("file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"),
-            _asset("file_tools-0.1.0-cp312-abi3-musllinux_1_2_x86_64.whl"),
+            _asset("mcp_file_tools-0.1.0-cp312-abi3-manylinux_2_17_x86_64.whl"),
+            _asset("mcp_file_tools-0.1.0-cp312-abi3-musllinux_1_2_x86_64.whl"),
         ]
     }
 
@@ -187,8 +187,8 @@ def test_select_wheel_asset_rejects_unknown_linux_libc() -> None:
 
 
 def test_select_wheel_asset_respects_macos_deployment_floor() -> None:
-    macos_11 = "file_tools-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
-    macos_14 = "file_tools-0.1.0-cp312-abi3-macosx_14_0_arm64.whl"
+    macos_11 = "mcp_file_tools-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
+    macos_14 = "mcp_file_tools-0.1.0-cp312-abi3-macosx_14_0_arm64.whl"
     release = {"assets": [_asset(macos_11), _asset(macos_14)]}
 
     selected, _ = INSTALLER.select_wheel_asset(
