@@ -1,6 +1,6 @@
 {
   "name": "file-tools",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Precise MCP file operations and bounded commands for local and SSH workspaces.",
   "author": {
     "name": "wzq"
